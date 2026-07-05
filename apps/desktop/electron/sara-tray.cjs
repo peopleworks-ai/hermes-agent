@@ -21,6 +21,32 @@
  */
 const { Tray, Menu, nativeImage, dialog, Notification, shell } = require('electron')
 
+// Always return a VISIBLE tray image. If the icon file is missing/empty (a common
+// cause of an invisible tray on Windows), fall back to a solid indigo square so
+// the user can always find + click the menu.
+function loadTrayIcon(iconPath) {
+  let img = null
+  try {
+    if (iconPath) img = nativeImage.createFromPath(iconPath)
+  } catch {
+    img = null
+  }
+  const empty = !img || img.isEmpty()
+  if (empty) {
+    const size = 16
+    const bmp = Buffer.alloc(size * size * 4)
+    for (let i = 0; i < bmp.length; i += 4) {
+      bmp[i] = 229 // B
+      bmp[i + 1] = 70 // G
+      bmp[i + 2] = 79 // R  (≈ indigo #4F46E5)
+      bmp[i + 3] = 255 // A
+    }
+    img = nativeImage.createFromBitmap(bmp, { width: size, height: size })
+  }
+  console.log('[sara] tray icon: path=' + (iconPath || 'none') + ' loaded=' + !empty)
+  return img
+}
+
 // Menu copy — exactly the brief's §5 labels.
 const WORKSPACE = {
   pause: 'Pause',
@@ -57,11 +83,12 @@ function initSaraTray(app, opts = {}) {
     currentWork: [],
   }
 
-  const img = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
+  const img = loadTrayIcon(iconPath)
   // macOS menubar wants a small template image; Windows/Linux use the icon as-is.
   const trayImg = process.platform === 'darwin' ? img.resize({ width: 18, height: 18 }) : img
   const tray = new Tray(trayImg)
   tray.setToolTip('Sarä')
+  console.log('[sara] tray created ✓ — look in the system tray (Windows: click ^ to show hidden icons)')
 
   function toast(body) {
     try {

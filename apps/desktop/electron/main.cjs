@@ -7589,7 +7589,7 @@ app.whenReady().then(() => {
     const saraPath = require('node:path')
     const { initSaraTray } = require('./sara-tray.cjs')
     initSaraTray(app, {
-      iconPath: saraPath.join(__dirname, '..', 'assets', 'icon.png'),
+      iconPath: saraPath.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
       webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
       getCurrentWork: async () => [],
       onWorkspaceChange: (mode) => console.log('[sara] workspace=' + mode),
