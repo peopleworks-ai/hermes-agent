@@ -203,6 +203,9 @@ function ensureHermesConfig() {
     ['model.provider', 'minimax'],
     ['model.base_url', `http://127.0.0.1:${LLM_PORT}/anthropic`],
     ['model.api_key', 'sara-local'],
+    // Point Hermes's browser tools (browser_cdp / browser_navigate / …) at the
+    // visible, persistent Chrome Sara the widget launches (brief §5).
+    ['browser.cdp_url', `http://127.0.0.1:${process.env.SARA_CDP_PORT || 39222}`],
   ]
   for (const [k, v] of settings) {
     try {

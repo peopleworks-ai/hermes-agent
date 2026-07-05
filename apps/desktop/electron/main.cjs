@@ -7595,15 +7595,26 @@ app.whenReady().then(() => {
     const saraPath = require('node:path')
     const { initSaraTray } = require('./sara-tray.cjs')
     const saraConn = require('./sara-connector.cjs')
+    const saraChrome = require('./sara-chrome.cjs')
     // Start the connector: pairing server (hcos "Connect" → here), no-key LLM
     // sidecar, Hermes auto-config, and the task-bridge poll. Runs inside the
     // widget — no separate .py needed.
     saraConn.start(app.getPath('userData'))
+    // Chrome Sara (§5): launch the visible, persistent-login browser Hermes drives
+    // via CDP (browser.cdp_url set by the connector auto-config). Guarded; reused
+    // if already running.
+    const launchChrome = () =>
+      saraChrome.launch().then((u) => console.log('[sara] Chrome Sara CDP:', u)).catch((e) => console.error('[sara] Chrome launch:', (e && e.message) || e))
+    launchChrome()
     initSaraTray(app, {
       iconPath: saraPath.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
       webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
       getCurrentWork: async () => saraConn.getCurrentWork(),
-      onWorkspaceChange: (mode) => saraConn.setPaused(mode === 'pause'),
+      onWorkspaceChange: (mode) => {
+        saraConn.setPaused(mode === 'pause')
+        if (mode === 'pause') saraChrome.quit()
+        else if (mode === 'chrome') launchChrome()
+      },
       onLearningChange: (mode) => console.log('[sara] learning=' + mode),
     })
   } catch (e) {
