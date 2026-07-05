@@ -5975,7 +5975,13 @@ function createWindow() {
 
   if (savedWindowState?.isMaximized) mainWindow.maximize()
 
+  // Sarä widget (§5): tray-only. The Hermes chat window is created (so the
+  // backend/renderer still boot) but NOT shown — the only UI is the tray menu,
+  // and the chat lives at hcos (Open Sara Web App). Flip to false to get the
+  // full window back for debugging.
+  const SARA_TRAY_ONLY = true
   mainWindow.once('ready-to-show', () => {
+    if (SARA_TRAY_ONLY) return
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
   })
 
