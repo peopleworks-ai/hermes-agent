@@ -7594,11 +7594,16 @@ app.whenReady().then(() => {
   try {
     const saraPath = require('node:path')
     const { initSaraTray } = require('./sara-tray.cjs')
+    const saraConn = require('./sara-connector.cjs')
+    // Start the connector: pairing server (hcos "Connect" → here), no-key LLM
+    // sidecar, Hermes auto-config, and the task-bridge poll. Runs inside the
+    // widget — no separate .py needed.
+    saraConn.start(app.getPath('userData'))
     initSaraTray(app, {
       iconPath: saraPath.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
       webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
-      getCurrentWork: async () => [],
-      onWorkspaceChange: (mode) => console.log('[sara] workspace=' + mode),
+      getCurrentWork: async () => saraConn.getCurrentWork(),
+      onWorkspaceChange: (mode) => saraConn.setPaused(mode === 'pause'),
       onLearningChange: (mode) => console.log('[sara] learning=' + mode),
     })
   } catch (e) {
