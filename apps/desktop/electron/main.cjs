@@ -7582,6 +7582,23 @@ app.whenReady().then(() => {
   registerPowerResumeListeners()
   createWindow()
 
+  // Sarä widget (fork ADD, brief §5): the menubar/tray. Additive + guarded so a
+  // tray failure never blocks boot. Callbacks are stubs for now — wired to the
+  // connector / Chrome Sara / hcos Current Work in later slices.
+  try {
+    const saraPath = require('node:path')
+    const { initSaraTray } = require('./sara-tray.cjs')
+    initSaraTray(app, {
+      iconPath: saraPath.join(__dirname, '..', 'assets', 'icon.png'),
+      webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
+      getCurrentWork: async () => [],
+      onWorkspaceChange: (mode) => console.log('[sara] workspace=' + mode),
+      onLearningChange: (mode) => console.log('[sara] learning=' + mode),
+    })
+  } catch (e) {
+    console.error('[sara] tray init failed:', (e && e.message) || e)
+  }
+
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
   if (_coldStartLink) handleDeepLink(_coldStartLink)
