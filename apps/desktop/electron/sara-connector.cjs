@@ -132,6 +132,17 @@ function startSidecar() {
       parsed.stream = false
       try {
         const resp = await hcos(LLM_METHOD, { payload: JSON.stringify(parsed) })
+        // Lazy Chrome Sara: the moment the model decides to use a browser tool,
+        // launch the visible Chrome now (just-in-time) so Hermes's browser_cdp
+        // has a CDP endpoint when it runs. Best-effort, non-blocking.
+        try {
+          const blocks = (resp && resp.content) || []
+          if (blocks.some((b) => b && b.type === 'tool_use' && /^browser/i.test(b.name || ''))) {
+            require('./sara-chrome.cjs').launch().catch(() => {})
+          }
+        } catch {
+          /* ignore */
+        }
         if (wantsStream) {
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
           for (const chunk of synthSSE(resp)) res.write(chunk)

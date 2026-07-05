@@ -7600,12 +7600,12 @@ app.whenReady().then(() => {
     // sidecar, Hermes auto-config, and the task-bridge poll. Runs inside the
     // widget — no separate .py needed.
     saraConn.start(app.getPath('userData'))
-    // Chrome Sara (§5): launch the visible, persistent-login browser Hermes drives
-    // via CDP (browser.cdp_url set by the connector auto-config). Guarded; reused
-    // if already running.
+    // Chrome Sara (§5): the visible, persistent-login browser Hermes drives via
+    // CDP (browser.cdp_url set by the connector auto-config). LAZY — NOT launched
+    // on start. The connector's LLM sidecar launches it just-in-time the moment
+    // Hermes decides to use a browser tool; the tray can also start/stop it.
     const launchChrome = () =>
       saraChrome.launch().then((u) => console.log('[sara] Chrome Sara CDP:', u)).catch((e) => console.error('[sara] Chrome launch:', (e && e.message) || e))
-    launchChrome()
     initSaraTray(app, {
       iconPath: saraPath.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
       webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
