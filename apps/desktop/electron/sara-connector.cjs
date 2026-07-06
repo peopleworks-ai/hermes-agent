@@ -257,8 +257,26 @@ function extractAnswer(raw) {
 function runHermes(prompt, onProgress) {
   return new Promise((resolve) => {
     let out = '',
-      err = '',
-      buffer = ''
+      err = ''
+    // Scan a stream line-by-line for tool markers (┊). Hermes may print the tool
+    // activity to stderr while the answer goes to stdout, so we scan BOTH.
+    const scanFactory = () => {
+      let b = ''
+      return (chunk) => {
+        b += chunk
+        let idx
+        while ((idx = b.indexOf('\n')) >= 0) {
+          const line = b.slice(0, idx).replace(ANSI, '').trim()
+          b = b.slice(idx + 1)
+          if (line.includes('┊') && onProgress) {
+            const step = line.replace(/^[┊\s]+/, '').replace(/\s{2,}/g, ' ').trim()
+            if (step) onProgress(step)
+          }
+        }
+      }
+    }
+    const scanOut = scanFactory()
+    const scanErr = scanFactory()
     let child
     try {
       child = spawn(HERMES, ['chat', '-q', prompt], { windowsHide: true })
@@ -273,19 +291,12 @@ function runHermes(prompt, onProgress) {
     }, HTIMEOUT_MS)
     child.stdout.on('data', (d) => {
       out += d
-      buffer += d
-      let idx
-      while ((idx = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, idx).replace(ANSI, '').trim()
-        buffer = buffer.slice(idx + 1)
-        // Tool/progress lines are marked with ┊ (e.g. "┊ 🌐 navigate example.com").
-        if (line.includes('┊') && onProgress) {
-          const step = line.replace(/^[┊\s]+/, '').replace(/\s{2,}/g, ' ').trim()
-          if (step) onProgress(step)
-        }
-      }
+      scanOut(d.toString('utf8'))
     })
-    child.stderr.on('data', (d) => (err += d))
+    child.stderr.on('data', (d) => {
+      err += d
+      scanErr(d.toString('utf8'))
+    })
     child.on('error', (e) => {
       clearTimeout(t)
       resolve({ error: `hermes not found (${HERMES}): ${(e && e.message) || e}` })
@@ -310,6 +321,7 @@ async function pollOnce() {
       console.log(`[sara] claimed ${task.name}: ${String(task.prompt).slice(0, 80)}`)
       const { result, error } = await runHermes(task.prompt || '', (step) => {
         // Stream each tool step as an event → the Sarä chat renders live cards.
+        console.log('[sara] step:', step)
         hcos(`${TASK_API}.append_task_event`, {
           name: task.name,
           event: JSON.stringify({ type: 'tool', text: step }),
