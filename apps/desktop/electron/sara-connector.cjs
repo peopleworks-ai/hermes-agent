@@ -309,7 +309,11 @@ async function pollOnce() {
       state.running.push(entry)
       console.log(`[sara] claimed ${task.name}: ${String(task.prompt).slice(0, 80)}`)
       const { result, error } = await runHermes(task.prompt || '', (step) => {
-        hcos(`${TASK_API}.update_task_progress`, { name: task.name, progress: step }).catch(() => {})
+        // Stream each tool step as an event → the Sarä chat renders live cards.
+        hcos(`${TASK_API}.append_task_event`, {
+          name: task.name,
+          event: JSON.stringify({ type: 'tool', text: step }),
+        }).catch(() => {})
       })
       await hcos(`${TASK_API}.complete_task`, { name: task.name, result, error })
       state.running = state.running.filter((r) => r.name !== task.name)
