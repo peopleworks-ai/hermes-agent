@@ -24,7 +24,11 @@ const PAIR_PORT = Number(process.env.SARA_PAIR_PORT || 8761)
 const DEVICE = os.hostname()
 const POLL_MS = 3000
 const HERMES = process.env.HERMES_BIN || 'hermes'
-const HTIMEOUT_MS = 600000
+// Zombie safety-net only — Hermes itself has no timeout. Heavy multi-app tasks
+// (build a spreadsheet, drive Gmail in the browser, write+run a script) legit run
+// well past 10 min, so kill only after 30. Keep in sync with the server's
+// STALE_MINUTES (a task can't run longer than this ceiling anyway).
+const HTIMEOUT_MS = 1800000
 const LLM_METHOD = 'hros.api.llm_proxy.anthropic_messages'
 const TASK_API = 'hros.api.sarah_desktop'
 
