@@ -227,13 +227,41 @@ function ensureHermesConfig() {
   }
 }
 
-function runHermes(prompt) {
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g
+
+// Pull the final answer out of `hermes chat -q` output — prefer the boxed
+// "Hermes" panel; else strip tool lines, the box borders, and the footer.
+function extractAnswer(raw) {
+  const lines = raw.replace(ANSI, '').split(/\r?\n/)
+  let inBox = false
+  const box = []
+  for (const ln of lines) {
+    if (/[╭┌].*Hermes/.test(ln)) {
+      inBox = true
+      continue
+    }
+    if (inBox && /[╰└]/.test(ln)) {
+      inBox = false
+      continue
+    }
+    if (inBox) box.push(ln.replace(/^[│|]?\s*/, '').replace(/\s+$/, ''))
+  }
+  const boxed = box.join('\n').trim()
+  if (boxed) return boxed
+  const junk = /^(Query:|Initializing agent|Resume this session|Session:|Duration:|Messages:)|┊|^\s*hermes --resume|^[\s┊│|╭╮╰╯└┌┐┘─═•]+$/
+  return lines.filter((l) => l.trim() && !junk.test(l)).map((l) => l.replace(/^[│|]?\s*/, '').trim()).join('\n').trim()
+}
+
+// Run via `hermes chat -q` (shows tool activity, unlike the silent `-z`) and
+// stream the tool lines out via onProgress so the Sarä chat shows live steps.
+function runHermes(prompt, onProgress) {
   return new Promise((resolve) => {
     let out = '',
-      err = ''
+      err = '',
+      buffer = ''
     let child
     try {
-      child = spawn(HERMES, ['-z', prompt], { windowsHide: true })
+      child = spawn(HERMES, ['chat', '-q', prompt], { windowsHide: true })
     } catch (e) {
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
     }
@@ -243,7 +271,20 @@ function runHermes(prompt) {
       } catch {}
       resolve({ error: `hermes timed out after ${HTIMEOUT_MS / 1000}s` })
     }, HTIMEOUT_MS)
-    child.stdout.on('data', (d) => (out += d))
+    child.stdout.on('data', (d) => {
+      out += d
+      buffer += d
+      let idx
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).replace(ANSI, '').trim()
+        buffer = buffer.slice(idx + 1)
+        // Tool/progress lines are marked with ┊ (e.g. "┊ 🌐 navigate example.com").
+        if (line.includes('┊') && onProgress) {
+          const step = line.replace(/^[┊\s]+/, '').replace(/\s{2,}/g, ' ').trim()
+          if (step) onProgress(step)
+        }
+      }
+    })
     child.stderr.on('data', (d) => (err += d))
     child.on('error', (e) => {
       clearTimeout(t)
@@ -252,7 +293,7 @@ function runHermes(prompt) {
     child.on('close', (code) => {
       clearTimeout(t)
       if (code !== 0) resolve({ error: (err || out || `hermes exit ${code}`).slice(0, 2000) })
-      else resolve({ result: (out || '').trim() })
+      else resolve({ result: extractAnswer(out) || '(no output)' })
     })
   })
 }
@@ -267,7 +308,9 @@ async function pollOnce() {
       const entry = { name: task.name, label: task.prompt || '(task)' }
       state.running.push(entry)
       console.log(`[sara] claimed ${task.name}: ${String(task.prompt).slice(0, 80)}`)
-      const { result, error } = await runHermes(task.prompt || '')
+      const { result, error } = await runHermes(task.prompt || '', (step) => {
+        hcos(`${TASK_API}.update_task_progress`, { name: task.name, progress: step }).catch(() => {})
+      })
       await hcos(`${TASK_API}.complete_task`, { name: task.name, result, error })
       state.running = state.running.filter((r) => r.name !== task.name)
       console.log(`[sara] done ${task.name}: ${error ? 'ERROR ' + error : String(result).slice(0, 100)}`)
