@@ -161,8 +161,16 @@ async function flush() {
   }
 }
 
+function clearTimers() {
+  if (snapTimer) clearInterval(snapTimer)
+  if (flushTimer) clearInterval(flushTimer)
+  if (firstFlushTimer) clearTimeout(firstFlushTimer)
+  snapTimer = flushTimer = firstFlushTimer = null
+}
+
 function start(opts) {
-  stop()
+  clearTimers() // SYNC reset — never call the async stop() here (it would null the new cfg)
+  frames = []
   cfg = opts || {}
   if (cfg.screen) {
     snapOnce()
@@ -180,12 +188,9 @@ function start(opts) {
 }
 
 async function stop() {
-  if (snapTimer) clearInterval(snapTimer)
-  if (flushTimer) clearInterval(flushTimer)
-  if (firstFlushTimer) clearTimeout(firstFlushTimer)
-  snapTimer = flushTimer = firstFlushTimer = null
+  clearTimers()
   try {
-    await flush() // upload whatever's buffered before we stop
+    await flush() // upload whatever's buffered before we stop (cfg still set)
   } catch {
     /* best-effort */
   }
