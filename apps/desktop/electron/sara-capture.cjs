@@ -15,6 +15,9 @@
  * apps/hros/omi-desktop-client/patched-files/src/main/ipc/screenActivityUploader.ts.
  */
 const { desktopCapturer, screen: elScreen } = require('electron')
+// Omi's native Windows OCR + window-info engine (extracted, MIT) — replaces
+// tesseract.js + active-win. One long-running win-ocr-helper.exe subprocess.
+const { helperProcess } = require('./ocr/helperProcess.cjs')
 
 const SNAP_MS = 60 * 1000
 const BATCH_MS = 15 * 60 * 1000
@@ -27,41 +30,11 @@ let flushTimer = null
 let firstFlushTimer = null
 let frames = []
 let flushing = false
-let ocrWorker = null
-let ocrBroken = false
 
 function fmtDt(ms) {
   const d = new Date(ms)
   const p = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-
-async function getActiveWindow() {
-  try {
-    const mod = await import('active-win') // v8 is ESM; dynamic import works from CJS
-    const fn = mod.default || mod.activeWindow || mod
-    const info = await fn()
-    if (info) return { app: (info.owner && info.owner.name) || '', title: info.title || '' }
-  } catch {
-    /* optional — degrade to no window info */
-  }
-  return { app: '', title: '' }
-}
-
-async function ocr(jpegBuffer) {
-  if (ocrBroken) return ''
-  try {
-    if (!ocrWorker) {
-      const { createWorker } = await import('tesseract.js')
-      ocrWorker = await createWorker('eng') // latin script covers EN + Malay words
-    }
-    const { data } = await ocrWorker.recognize(jpegBuffer)
-    return ((data && data.text) || '').replace(/\s+/g, ' ').trim().slice(0, 4000)
-  } catch (e) {
-    ocrBroken = true // wasm/lang-data can't load → titles-only from here on
-    console.error('[sara] OCR disabled (titles-only):', (e && e.message) || e)
-    return ''
-  }
 }
 
 async function snapOnce() {
@@ -75,9 +48,11 @@ async function snapOnce() {
     const img = sources[0].thumbnail
     if (!img || img.isEmpty()) return
     const jpeg = img.toJPEG(70)
-    const { app, title } = await getActiveWindow()
-    const ocrText = await ocr(jpeg)
-    frames.push({ ts: Date.now(), app, windowTitle: title, ocrText, jpeg })
+    // Native Windows engine: foreground window + OCR (no tesseract / active-win).
+    const win = await helperProcess.windowInfo() // { app, title } | { '', '' }
+    const res = await helperProcess.ocr(jpeg) // { ok, fullText } | { ok:false, ... }
+    const ocrText = res && res.ok ? (res.fullText || '').replace(/\s+/g, ' ').trim().slice(0, 4000) : ''
+    frames.push({ ts: Date.now(), app: (win && win.app) || '', windowTitle: (win && win.title) || '', ocrText, jpeg })
     if (frames.length > MAX_FRAMES) frames = frames.slice(-MAX_FRAMES)
   } catch (e) {
     console.error('[sara] snap failed:', (e && e.message) || e)
@@ -195,12 +170,9 @@ async function stop() {
     /* best-effort */
   }
   frames = []
-  if (ocrWorker) {
-    try {
-      await ocrWorker.terminate()
-    } catch {}
-    ocrWorker = null
-  }
+  try {
+    helperProcess.dispose() // stop the win-ocr-helper subprocess
+  } catch {}
   cfg = null
 }
 
