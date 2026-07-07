@@ -63,10 +63,19 @@ function loadCreds() {
   }
   return !!(state.key && state.secret)
 }
+function readConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(cfgPath(), 'utf8')) || {}
+  } catch {
+    return {}
+  }
+}
+// MERGES into sara-config.json so persisting watch state doesn't drop the creds
+// (and re-pairing doesn't drop the watch state).
 function saveCreds(c) {
   try {
     fs.mkdirSync(path.dirname(cfgPath()), { recursive: true })
-    fs.writeFileSync(cfgPath(), JSON.stringify(c))
+    fs.writeFileSync(cfgPath(), JSON.stringify({ ...readConfig(), ...c }))
   } catch (e) {
     console.error('[sara] saveCreds failed:', e && e.message)
   }
@@ -344,6 +353,75 @@ async function pollOnce() {
 }
 
 // ── public API ───────────────────────────────────────────────────────────
+// ── (3) Learn-by-Watching: register an Omi device + consent, then capture ──
+let hbTimer = null
+const watch = { enabled: false, screen: false, voice: false, deviceId: null }
+
+function startHeartbeat() {
+  stopHeartbeat()
+  const beat = () => {
+    if (watch.deviceId) hcos('hros.api.omi_desktop.heartbeat', { device_id: watch.deviceId }).catch(() => {})
+  }
+  beat()
+  hbTimer = setInterval(beat, 60000)
+}
+function stopHeartbeat() {
+  if (hbTimer) clearInterval(hbTimer)
+  hbTimer = null
+}
+
+// Called from the tray when the user picks "Learn By Watching Me" + a mode.
+async function startWatch(modes) {
+  if (!isPaired()) throw new Error('not paired — connect the desktop app first')
+  const scr = !!(modes && modes.screen)
+  const voi = !!(modes && modes.voice)
+  // Ensure an Active Omi device using our EXISTING token (register_device does
+  // NOT rotate the api_secret, unlike pair_device — so our connector stays valid).
+  const reg = await hcos('hros.api.omi_desktop.register_device', {
+    device_label: `Sarä Desktop (${DEVICE})`,
+    platform: process.platform,
+  })
+  watch.deviceId = reg && reg.device_id
+  if (!watch.deviceId) throw new Error('register_device returned no device_id')
+  await hcos('hros.api.omi_desktop.set_recording_consent', {
+    device_id: watch.deviceId,
+    allowed: 1,
+    consent_version: 'sara-widget-v1',
+  })
+  watch.enabled = true
+  watch.screen = scr
+  watch.voice = voi
+  saveCreds({ omi_device_id: watch.deviceId, watch: { enabled: true, screen: scr, voice: voi } })
+  startHeartbeat()
+  // Slices 3/4 wire the real capturers here, e.g.:
+  //   saraCapture.start({ screen: scr, voice: voi, deviceId: watch.deviceId, hcos, base: state.base, key: state.key, secret: state.secret })
+  console.log(`[sara] watching ON (screen=${scr} voice=${voi}) device=${watch.deviceId}`)
+  return { deviceId: watch.deviceId, screen: scr, voice: voi }
+}
+
+async function stopWatch() {
+  stopHeartbeat()
+  // Slices 3/4: stop the capturers here.
+  const wasOn = watch.enabled
+  watch.enabled = false
+  saveCreds({ watch: { enabled: false, screen: watch.screen, voice: watch.voice } })
+  if (wasOn && watch.deviceId) {
+    try {
+      await hcos('hros.api.omi_desktop.set_recording_consent', { device_id: watch.deviceId, allowed: 0 })
+    } catch {}
+  }
+  console.log('[sara] watching OFF')
+}
+
+// On launch, resume watching if the user had it on (consent already given).
+function resumeWatchIfEnabled() {
+  const w = readConfig().watch
+  if (w && w.enabled && isPaired()) {
+    startWatch({ screen: w.screen, voice: w.voice }).catch((e) =>
+      console.error('[sara] resume watch failed:', (e && e.message) || e))
+  }
+}
+
 function start(dir, onPaired) {
   userDataDir = dir
   loadCreds()
@@ -351,11 +429,13 @@ function start(dir, onPaired) {
   startPairing(onPaired)
   ensureHermesConfig()
   if (!pollTimer) pollTimer = setInterval(pollOnce, POLL_MS)
+  resumeWatchIfEnabled()
   console.log(`[sara] connector started (paired=${isPaired()}, device=${DEVICE})`)
 }
 function stop() {
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = null
+  stopHeartbeat()
   try {
     sidecarSrv && sidecarSrv.close()
   } catch {}
@@ -370,4 +450,4 @@ function setPaused(p) {
   state.paused = !!p
 }
 
-module.exports = { start, stop, getCurrentWork, isPaired, setPaused }
+module.exports = { start, stop, getCurrentWork, isPaired, setPaused, startWatch, stopWatch }

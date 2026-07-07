@@ -7615,7 +7615,16 @@ app.whenReady().then(() => {
         if (mode === 'pause') saraChrome.quit()
         else if (mode === 'chrome') launchChrome()
       },
-      onLearningChange: (mode) => console.log('[sara] learning=' + mode),
+      onLearningChange: (mode, modes) => {
+        console.log('[sara] learning=' + mode + (modes ? ` (screen=${modes.screen} voice=${modes.voice})` : ''))
+        if (mode === 'watch') {
+          saraConn
+            .startWatch(modes)
+            .catch((e) => console.error('[sara] startWatch failed:', (e && e.message) || e))
+        } else if (mode === 'off') {
+          saraConn.stopWatch().catch(() => {})
+        }
+      },
     })
   } catch (e) {
     console.error('[sara] tray init failed:', (e && e.message) || e)

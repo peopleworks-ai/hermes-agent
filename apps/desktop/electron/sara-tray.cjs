@@ -81,6 +81,7 @@ function initSaraTray(app, opts = {}) {
     workspace: 'chrome', // default on startup (§5)
     learning: 'off',
     currentWork: [],
+    watchModes: null, // { screen, voice } while Learning = Watch
   }
 
   const img = loadTrayIcon(iconPath)
@@ -111,6 +112,34 @@ function initSaraTray(app, opts = {}) {
     return res === 0
   }
 
+  // §5 Learn-by-Watching consent: the user chooses what Sarä may capture.
+  // Returns { screen, voice } or null (cancelled).
+  function chooseWatchModes() {
+    const res = dialog.showMessageBoxSync({
+      type: 'question',
+      buttons: ['Screen + Voice', 'Voice only', 'Screen only', 'Cancel'],
+      defaultId: 0,
+      cancelId: 3,
+      title: 'Sarä — Learn by Watching',
+      message: 'Let Sarä learn how you work',
+      detail:
+        'Sarä will build private work memory + skills from what you allow below. ' +
+        'It stays yours — you can stop anytime from this menu.\n\n' +
+        '• Screen — periodic snapshots of your activity (active window + on-screen text)\n' +
+        '• Voice — your meetings (microphone)\n\n' +
+        'Your operating system may ask for Screen Recording / Microphone permission next.',
+    })
+    if (res === 0) return { screen: true, voice: true }
+    if (res === 1) return { screen: false, voice: true }
+    if (res === 2) return { screen: true, voice: false }
+    return null // Cancel
+  }
+
+  function watchLabel(m) {
+    if (!m) return ''
+    return m.screen && m.voice ? 'Screen + Voice' : m.voice ? 'Voice' : 'Screen'
+  }
+
   // ── Workspace transitions (with §5 rules) ──────────────────────────────
   function setWorkspace(mode) {
     if (mode === state.workspace) return rebuild()
@@ -121,6 +150,7 @@ function initSaraTray(app, opts = {}) {
       // Leaving Whole Computer while Watching is on → Watching can't continue.
       if (state.learning === 'watch') {
         state.learning = 'off'
+        state.watchModes = null
         toast('Watching paused — needs Whole Computer')
         onLearningChange('off')
       }
@@ -141,16 +171,19 @@ function initSaraTray(app, opts = {}) {
       onLearningChange('ask')
       openWebApp() // §5: opens the AI Personal Assistant chat
     } else if (mode === 'watch') {
-      // Watch Me requires Whole Computer — auto-switch on confirm (§5).
+      const modes = chooseWatchModes()
+      if (!modes) return rebuild() // cancelled → revert the radio
       state.learning = 'watch'
+      state.watchModes = modes
+      // Watch Me requires Whole Computer — auto-switch (the consent dialog covered it).
       if (state.workspace !== 'whole') {
         state.workspace = 'whole'
         onWorkspaceChange('whole')
       }
-      toast(POPUP.watch)
-      onLearningChange('watch') // callback starts Omi capture
+      onLearningChange('watch', modes) // { screen, voice } → connector registers + captures
     } else {
       state.learning = 'off'
+      state.watchModes = null
       onLearningChange('off')
     }
     rebuild()
@@ -182,6 +215,9 @@ function initSaraTray(app, opts = {}) {
       radio(LEARNING.off, state.learning === 'off', () => setLearning('off')),
       radio(LEARNING.ask, state.learning === 'ask', () => setLearning('ask')),
       radio(LEARNING.watch, state.learning === 'watch', () => setLearning('watch')),
+      ...(state.learning === 'watch'
+        ? [{ label: `   👁️ Watching: ${watchLabel(state.watchModes)}`, enabled: false }]
+        : []),
       { type: 'separator' },
       { label: 'CURRENT WORK', enabled: false },
       ...cw,
