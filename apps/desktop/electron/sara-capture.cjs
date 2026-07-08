@@ -19,10 +19,15 @@ const { desktopCapturer, screen: elScreen } = require('electron')
 // tesseract.js + active-win. One long-running win-ocr-helper.exe subprocess.
 const { helperProcess } = require('./ocr/helperProcess.cjs')
 
-const SNAP_MS = 60 * 1000
+// CHANGE-DRIVEN capture: poll the screen cheaply and keep a frame only when it
+// meaningfully changes (≈ one frame per action) — so the vision model gets the
+// step granularity a step-by-step SOP needs, instead of 1 blurry frame/minute.
+const POLL_MS = 2500 // sample the screen every 2.5s (cheap: just a hash)
 const BATCH_MS = 15 * 60 * 1000
-const MAX_FRAMES = 30
+const MAX_FRAMES = 50 // frames kept per batch; the server samples these down for vision
 const MAX_GAP_MS = 120 * 1000 // cap a frame's attributed active-seconds (idle guard)
+const CHANGE_THRESHOLD = 12 // aHash Hamming distance (of 256) that counts as a new step
+const HEARTBEAT_MS = 3 * 60 * 1000 // keep ≥1 frame every 3 min even when nothing changes
 
 let cfg = null // { deviceId, base, key, secret, screen, voice }
 let snapTimer = null
@@ -30,11 +35,40 @@ let flushTimer = null
 let firstFlushTimer = null
 let frames = []
 let flushing = false
+let lastHash = null
+let lastKeptTs = 0
 
 function fmtDt(ms) {
   const d = new Date(ms)
   const p = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** 16×16 grayscale average-hash of a nativeImage → 256-bit fingerprint. */
+function aHash(img) {
+  const small = img.resize({ width: 16, height: 16, quality: 'good' })
+  const bmp = small.toBitmap() // BGRA
+  const n = 16 * 16
+  const gray = new Float32Array(n)
+  let sum = 0
+  for (let i = 0; i < n; i++) {
+    const b = bmp[i * 4] || 0,
+      g = bmp[i * 4 + 1] || 0,
+      r = bmp[i * 4 + 2] || 0
+    const v = r * 0.3 + g * 0.59 + b * 0.11
+    gray[i] = v
+    sum += v
+  }
+  const mean = sum / n
+  const bits = new Uint8Array(n)
+  for (let i = 0; i < n; i++) bits[i] = gray[i] > mean ? 1 : 0
+  return bits
+}
+function hamming(a, b) {
+  if (!a || !b) return 9999
+  let d = 0
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++
+  return d
 }
 
 async function snapOnce() {
@@ -47,12 +81,21 @@ async function snapOnce() {
     if (!sources.length) return
     const img = sources[0].thumbnail
     if (!img || img.isEmpty()) return
-    const jpeg = img.toJPEG(70)
-    // Native Windows engine: foreground window + OCR (no tesseract / active-win).
-    const win = await helperProcess.windowInfo() // { app, title } | { '', '' }
+
+    // Cheap change test — hash the downscaled frame; only KEEP (OCR + encode) on a
+    // meaningful change or the idle heartbeat.
+    const hash = aHash(img)
+    const changed = hamming(hash, lastHash) > CHANGE_THRESHOLD
+    const heartbeat = Date.now() - lastKeptTs > HEARTBEAT_MS
+    lastHash = hash
+    if (!changed && !heartbeat) return
+
+    const jpeg = img.toJPEG(70) // encode only kept frames
+    const win = await helperProcess.windowInfo() // { app, title } (native)
     const res = await helperProcess.ocr(jpeg) // { ok, fullText } | { ok:false, ... }
     const ocrText = res && res.ok ? (res.fullText || '').replace(/\s+/g, ' ').trim().slice(0, 4000) : ''
     frames.push({ ts: Date.now(), app: (win && win.app) || '', windowTitle: (win && win.title) || '', ocrText, jpeg })
+    lastKeptTs = Date.now()
     if (frames.length > MAX_FRAMES) frames = frames.slice(-MAX_FRAMES)
   } catch (e) {
     console.error('[sara] snap failed:', (e && e.message) || e)
@@ -64,7 +107,7 @@ function computeUsage(batch) {
   let activeSeconds = 0
   const sorted = [...batch].sort((a, b) => a.ts - b.ts)
   for (let i = 0; i < sorted.length; i++) {
-    const gap = i < sorted.length - 1 ? sorted[i + 1].ts - sorted[i].ts : SNAP_MS
+    const gap = i < sorted.length - 1 ? sorted[i + 1].ts - sorted[i].ts : POLL_MS
     const secs = Math.round(Math.min(gap, MAX_GAP_MS) / 1000)
     const a = sorted[i].app || 'Unknown'
     topApps[a] = (topApps[a] || 0) + secs
@@ -146,10 +189,12 @@ function clearTimers() {
 function start(opts) {
   clearTimers() // SYNC reset — never call the async stop() here (it would null the new cfg)
   frames = []
+  lastHash = null
+  lastKeptTs = 0
   cfg = opts || {}
   if (cfg.screen) {
     snapOnce()
-    snapTimer = setInterval(snapOnce, SNAP_MS)
+    snapTimer = setInterval(snapOnce, POLL_MS)
     // First batch fires early so a session appears within ~2 min (testing);
     // thereafter every 15 min. Overridable via SARA_SCREEN_BATCH_MS.
     const batchMs = Number(process.env.SARA_SCREEN_BATCH_MS) || BATCH_MS
@@ -157,7 +202,7 @@ function start(opts) {
       flush()
       flushTimer = setInterval(flush, batchMs)
     }, 90 * 1000)
-    console.log('[sara] screen capture started (snap 60s, first batch ~90s)')
+    console.log('[sara] screen capture started (change-driven: poll 2.5s, keep on change; first batch ~90s)')
   }
   // cfg.voice → Slice 4 (hidden renderer getUserMedia → MediaRecorder). Not yet wired.
 }
