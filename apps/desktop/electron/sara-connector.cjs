@@ -393,13 +393,20 @@ async function startWatch(modes) {
   watch.voice = voi
   saveCreds({ omi_device_id: watch.deviceId, watch: { enabled: true, screen: scr, voice: voi } })
   startHeartbeat()
-  try {
-    require('./sara-capture.cjs').start({
-      screen: scr, voice: voi, deviceId: watch.deviceId,
-      base: state.base, key: state.key, secret: state.secret,
-    })
-  } catch (e) {
-    console.error('[sara] capture start failed:', (e && e.message) || e)
+  const capCfg = { deviceId: watch.deviceId, base: state.base, key: state.key, secret: state.secret }
+  if (scr) {
+    try {
+      require('./sara-capture.cjs').start({ ...capCfg, screen: true })
+    } catch (e) {
+      console.error('[sara] screen capture start failed:', (e && e.message) || e)
+    }
+  }
+  if (voi) {
+    try {
+      require('./sara-voice.cjs').start({ ...capCfg, system: true })
+    } catch (e) {
+      console.error('[sara] voice capture start failed:', (e && e.message) || e)
+    }
   }
   console.log(`[sara] watching ON (screen=${scr} voice=${voi}) device=${watch.deviceId}`)
   return { deviceId: watch.deviceId, screen: scr, voice: voi }
@@ -409,6 +416,9 @@ async function stopWatch() {
   stopHeartbeat()
   try {
     require('./sara-capture.cjs').stop()
+  } catch {}
+  try {
+    require('./sara-voice.cjs').stop()
   } catch {}
   const wasOn = watch.enabled
   watch.enabled = false

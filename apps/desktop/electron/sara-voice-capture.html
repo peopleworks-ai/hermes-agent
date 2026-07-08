@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Sarä Voice Capture</title>
+  </head>
+  <body>
+    <!--
+      Hidden capture renderer for Learn-by-Watching voice. Runs Omi's hrosRecording
+      logic (mic + optional system loopback → AudioContext dest → MediaRecorder
+      webm/opus 32kbps, with the AudioContext.resume() silence fix). Segments are
+      finalized on a timer (main sends 'sara-voice:rotate') and shipped to main via
+      IPC, which uploads them to the live omi_desktop endpoints. Ported from Omi (MIT).
+    -->
+    <script>
+      const { ipcRenderer } = require('electron')
+
+      let current = null // { ctx, dest, recorder, chunks, startedAt, sources:Set, streams:[] }
+      let rotateOpts = { system: false }
+
+      async function getSystemAudioStream() {
+        const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+        const audioTracks = display.getAudioTracks()
+        display.getVideoTracks().forEach((t) => t.stop())
+        if (!audioTracks.length) throw new Error('no system-audio (loopback) track')
+        return new MediaStream(audioTracks)
+      }
+
+      function addSource(source, stream) {
+        const tracks = stream.getAudioTracks()
+        if (!tracks.length) return
+        if (!current) {
+          const ctx = new AudioContext()
+          // Critical: a suspended context records silence — resume it.
+          ctx.resume().catch(() => {})
+          const dest = ctx.createMediaStreamDestination()
+          const recorder = new MediaRecorder(dest.stream, {
+            mimeType: 'audio/webm;codecs=opus',
+            audioBitsPerSecond: 32000,
+          })
+          const chunks = []
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) chunks.push(e.data)
+          }
+          recorder.onerror = (e) => console.error('[sara-voice] recorder error', e)
+          recorder.start(1000)
+          current = { ctx, dest, recorder, chunks, startedAt: Date.now(), sources: new Set(), streams: [] }
+        }
+        if (current.ctx.state === 'suspended') current.ctx.resume().catch(() => {})
+        current.ctx.createMediaStreamSource(stream).connect(current.dest)
+        current.sources.add(source)
+        current.streams.push(stream)
+      }
+
+      function teardown(s) {
+        s.streams.forEach((st) => st.getTracks().forEach((t) => t.stop()))
+        s.ctx.close().catch(() => {})
+      }
+
+      function finalize() {
+        const s = current
+        current = null
+        if (!s) return Promise.resolve(null)
+        return new Promise((resolve) => {
+          s.recorder.onstop = () => {
+            const blob = new Blob(s.chunks, { type: 'audio/webm' })
+            teardown(s)
+            resolve({ blob, startedAt: s.startedAt, endedAt: Date.now(), sources: [...s.sources] })
+          }
+          try {
+            if (s.recorder.state !== 'inactive') s.recorder.requestData()
+            s.recorder.stop()
+          } catch {
+            teardown(s)
+            resolve(null)
+          }
+        })
+      }
+
+      async function startRecording(opts) {
+        try {
+          const mic = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true },
+          })
+          addSource('mic', mic)
+        } catch (e) {
+          console.error('[sara-voice] mic failed:', (e && e.message) || e)
+        }
+        if (opts && opts.system) {
+          try {
+            addSource('system', await getSystemAudioStream())
+          } catch (e) {
+            console.warn('[sara-voice] system audio unavailable (mic-only):', (e && e.message) || e)
+          }
+        }
+        if (!current) {
+          ipcRenderer.send('sara-voice:error', 'no audio source available')
+          return
+        }
+        console.log('[sara-voice] recording', [...current.sources])
+      }
+
+      async function rotate(final) {
+        const res = await finalize()
+        if (res && res.blob && res.blob.size > 0) {
+          const buf = await res.blob.arrayBuffer()
+          ipcRenderer.send(
+            'sara-voice:segment',
+            {
+              startedAt: res.startedAt,
+              endedAt: res.endedAt,
+              durationSeconds: Math.round((res.endedAt - res.startedAt) / 1000),
+              sources: res.sources,
+            },
+            buf,
+          )
+        }
+        if (!final) await startRecording(rotateOpts) // restart for the next segment
+      }
+
+      ipcRenderer.on('sara-voice:start', (_e, opts) => {
+        rotateOpts = opts || {}
+        startRecording(rotateOpts)
+      })
+      ipcRenderer.on('sara-voice:rotate', () => rotate(false))
+      ipcRenderer.on('sara-voice:stop', async () => {
+        await rotate(true)
+        ipcRenderer.send('sara-voice:stopped')
+      })
+    </script>
+  </body>
+</html>
