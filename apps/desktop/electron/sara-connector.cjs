@@ -170,6 +170,19 @@ function startSidecar() {
       }
     })
   })
+  // A listen() error MUST be handled: without this, EADDRINUSE is an UNCAUGHT exception in
+  // the main process → Electron pops "A JavaScript error occurred in the main process" and the
+  // app dies. That fires whenever the port is already held — a user double-clicking the icon
+  // while the app is running in the tray, or a leftover dev/unpacked instance. Degrade
+  // gracefully instead: skip the sidecar, keep the app alive.
+  sidecarSrv.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') {
+      console.warn(`[sara] LLM sidecar port ${LLM_PORT} already in use — another Sarä instance owns it; skipping sidecar.`)
+    } else {
+      console.error('[sara] LLM sidecar server error:', (e && e.message) || e)
+    }
+    sidecarSrv = null
+  })
   sidecarSrv.listen(LLM_PORT, '127.0.0.1', () =>
     console.log(`[sara] LLM sidecar on http://127.0.0.1:${LLM_PORT} (no key on this laptop)`)
   )
@@ -214,6 +227,15 @@ function startPairing(onPaired) {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end('{"ok":true}')
     })
+  })
+  // Same guard as the sidecar above — an unhandled EADDRINUSE here kills the whole app.
+  pairSrv.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') {
+      console.warn(`[sara] pairing port ${PAIR_PORT} already in use — another Sarä instance owns it; skipping pairing server.`)
+    } else {
+      console.error('[sara] pairing server error:', (e && e.message) || e)
+    }
+    pairSrv = null
   })
   pairSrv.listen(PAIR_PORT, '127.0.0.1', () =>
     console.log(`[sara] pairing server on http://127.0.0.1:${PAIR_PORT}`)
