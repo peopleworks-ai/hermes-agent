@@ -379,6 +379,34 @@ async function pollOnce() {
 let hbTimer = null
 const watch = { enabled: false, screen: false, voice: false, deviceId: null }
 
+// `watch` is the ONLY truth about whether we are recording. The UI must mirror it, never guess:
+// resumeWatchIfEnabled() below can turn recording ON at boot with nobody clicking anything, and it
+// can also FAIL after we've already decided to resume. Anyone rendering a "watching" indicator
+// subscribes here instead of keeping their own copy — that is what stopped the tray from claiming
+// "Learning Mode: Off" while the screen was being captured and uploaded.
+const watchListeners = []
+function onWatchChange(cb) {
+  if (typeof cb !== 'function') return () => {}
+  watchListeners.push(cb)
+  return () => {
+    const i = watchListeners.indexOf(cb)
+    if (i >= 0) watchListeners.splice(i, 1)
+  }
+}
+function emitWatch() {
+  const snap = getWatch()
+  for (const cb of watchListeners.slice()) {
+    try {
+      cb(snap)
+    } catch {
+      /* a bad listener must never take the capture pipeline down */
+    }
+  }
+}
+function getWatch() {
+  return { enabled: watch.enabled, screen: watch.screen, voice: watch.voice, deviceId: watch.deviceId }
+}
+
 function startHeartbeat() {
   stopHeartbeat()
   const beat = () => {
@@ -431,6 +459,7 @@ async function startWatch(modes) {
     }
   }
   console.log(`[sara] watching ON (screen=${scr} voice=${voi}) device=${watch.deviceId}`)
+  emitWatch()
   return { deviceId: watch.deviceId, screen: scr, voice: voi }
 }
 
@@ -451,14 +480,20 @@ async function stopWatch() {
     } catch {}
   }
   console.log('[sara] watching OFF')
+  emitWatch()
 }
 
 // On launch, resume watching if the user had it on (consent already given).
 function resumeWatchIfEnabled() {
   const w = readConfig().watch
   if (w && w.enabled && isPaired()) {
-    startWatch({ screen: w.screen, voice: w.voice }).catch((e) =>
-      console.error('[sara] resume watch failed:', (e && e.message) || e))
+    startWatch({ screen: w.screen, voice: w.voice }).catch((e) => {
+      console.error('[sara] resume watch failed:', (e && e.message) || e)
+      // startWatch throws BEFORE setting watch.enabled, so we are not recording. Say so — a UI
+      // that had already armed itself from the persisted config must drop back to "armed, not
+      // recording" rather than show a red dot for a capture that never started.
+      emitWatch()
+    })
   }
 }
 
@@ -490,4 +525,17 @@ function setPaused(p) {
   state.paused = !!p
 }
 
-module.exports = { start, stop, getCurrentWork, isPaired, setPaused, startWatch, stopWatch }
+module.exports = {
+  start,
+  stop,
+  getCurrentWork,
+  isPaired,
+  setPaused,
+  startWatch,
+  stopWatch,
+  // Additive — so sara-state.cjs can be the ONE owner of widget state without a second store:
+  readConfig, // the persisted sara-config.json (creds + watch + our own {sara:{…}} block)
+  patchConfig: saveCreds, // MERGING write — never clobbers creds or watch
+  getWatch, // the truth about recording
+  onWatchChange, // …and a subscription to it
+}
