@@ -1,0 +1,90 @@
+# Build the Sarä Desktop installers — Windows (.exe) and macOS (.dmg).
+#
+# WHY: some clients run Windows, some run Mac, and we have no Mac to build on. GitHub's
+# macOS runner is the Mac. Click "Run workflow", wait, download the artifact — no Apple
+# hardware needed.
+#
+# SIGNING is optional and OFF until the certs exist, so the very first run SUCCEEDS:
+#   - notarize.cjs already skips itself when the APPLE_* env vars are absent (it logs and
+#     returns; it does not throw), and CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder
+#     from trying to sign with whatever identity happens to be on the runner.
+#   - Add the repo secrets below and both jobs sign + notarise automatically, no edit here:
+#       MAC_CSC_LINK / MAC_CSC_KEY_PASSWORD   → Apple Developer ID .p12 (base64) + its password
+#       APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER  → App Store Connect key (notarising)
+#       WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD   → Authenticode .pfx (base64) + its password
+#
+# HONEST NOTE on unsigned builds: Windows shows "Windows protected your PC" (clickable past —
+# More info → Run anyway). macOS Gatekeeper is far stricter: an un-notarised app is a real wall
+# for a normal user. A Mac release therefore effectively REQUIRES an Apple Developer account.
+# Unsigned Mac builds are fine for internal testing, not for clients.
+#
+# COST: this repo is private, so macOS minutes bill at 10× — a ~15-minute Mac build eats ~150
+# of the monthly allowance. Build Mac on demand, not on every push.
+
+name: Build installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which installer(s) to build
+        type: choice
+        default: both
+        options: [both, windows, mac]
+
+jobs:
+  windows:
+    if: ${{ inputs.target == 'both' || inputs.target == 'windows' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # Deps live at the workspace ROOT (apps/desktop/scripts/assert-root-install.cjs enforces it).
+      - run: npm ci
+      - name: Build Windows installer (.exe)
+        working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npm run dist:win:nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sara-desktop-windows
+          path: apps/desktop/release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  mac:
+    if: ${{ inputs.target == 'both' || inputs.target == 'mac' }}
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build macOS installer (.dmg)
+        working-directory: apps/desktop
+        env:
+          # Sign only when a cert is actually configured — otherwise electron-builder would try
+          # to sign with a random keychain identity and fail the run for no reason.
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CSC_LINK != '' && 'true' || 'false' }}
+          # Consumed by scripts/notarize.cjs (afterSign). Absent ⇒ it logs and skips.
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run dist:mac:dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sara-desktop-macos
+          path: apps/desktop/release/*.dmg
+          if-no-files-found: error
+          retention-days: 14
