@@ -47,10 +47,25 @@ jobs:
       - run: npm ci
       - name: Build Windows installer (.exe)
         working-directory: apps/desktop
+        shell: bash
         env:
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npm run dist:win:nsis
+          # Deliberately NOT named CSC_*: an unset GitHub secret still exports the variable as an
+          # EMPTY STRING, and electron-builder reads a defined-but-empty CSC_LINK as "the
+          # certificate lives at ''", resolves that against the project dir, and dies with
+          # "<projectDir> not a file". So we stage the secrets under our own names and only
+          # export CSC_* when a certificate really exists.
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -n "$WIN_CSC_LINK" ]; then
+            export CSC_LINK="$WIN_CSC_LINK"
+            export CSC_KEY_PASSWORD="$WIN_CSC_KEY_PASSWORD"
+            echo "Signing with the configured Authenticode certificate."
+          else
+            echo "No WIN_CSC_LINK secret — building UNSIGNED. SmartScreen will warn, but a client"
+            echo "can click through (More info → Run anyway)."
+          fi
+          npm run dist:win:nsis -- --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: sara-desktop-windows
@@ -71,17 +86,30 @@ jobs:
       - run: npm ci
       - name: Build macOS installer (.dmg)
         working-directory: apps/desktop
+        shell: bash
         env:
-          # Sign only when a cert is actually configured — otherwise electron-builder would try
-          # to sign with a random keychain identity and fail the run for no reason.
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CSC_LINK != '' && 'true' || 'false' }}
-          # Consumed by scripts/notarize.cjs (afterSign). Absent ⇒ it logs and skips.
+          # Same trap as the Windows job: an absent secret is exported as an EMPTY CSC_LINK, which
+          # electron-builder happily treats as a certificate path — this is exactly what failed
+          # run #1 with "⨯ .../apps/desktop not a file". Stage them under our own names instead.
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          # Read by scripts/notarize.cjs (afterSign). Absent ⇒ it logs and returns; it never throws.
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run dist:mac:dmg
+        run: |
+          if [ -n "$MAC_CSC_LINK" ]; then
+            export CSC_LINK="$MAC_CSC_LINK"
+            export CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
+            export CSC_IDENTITY_AUTO_DISCOVERY=true
+            echo "Signing with the configured Developer ID certificate."
+          else
+            # No cert — stop electron-builder from also hunting the runner's keychain for one.
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "No MAC_CSC_LINK secret — building UNSIGNED. Fine for internal testing; a CLIENT"
+            echo "release needs an Apple Developer cert: Gatekeeper is a wall, not a warning."
+          fi
+          npm run dist:mac:dmg -- --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: sara-desktop-macos
