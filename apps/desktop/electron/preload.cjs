@@ -33,6 +33,24 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
     }
   },
+  // Sarä widget — a second view over the same state the tray renders (sara-state.cjs).
+  sara: {
+    get: () => ipcRenderer.invoke('hermes:sara:get'),
+    // These RESOLVE WITH THE SETTLED STATE. A cancelled consent/confirm dialog comes back
+    // unchanged, so the segmented control snaps back to the truth instead of the renderer showing
+    // an optimistic value it would then have to unwind — and a segment that lies about whether a
+    // screen recorder is on is exactly the bug this whole refactor exists to kill.
+    setWorkspace: mode => ipcRenderer.invoke('hermes:sara:setWorkspace', mode),
+    setLearning: mode => ipcRenderer.invoke('hermes:sara:setLearning', mode),
+    openWebApp: () => ipcRenderer.invoke('hermes:sara:openWebApp'),
+    quit: () => ipcRenderer.invoke('hermes:sara:quit'),
+    // Live push from the store — the widget never polls.
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:sara:state', listener)
+      return () => ipcRenderer.removeListener('hermes:sara:state', listener)
+    }
+  },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),

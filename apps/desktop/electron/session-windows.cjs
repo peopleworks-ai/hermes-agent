@@ -55,6 +55,26 @@ function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch,
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
+// Build the renderer URL for a NON-chat surface that lives in the same bundle — today the pet
+// overlay (`?win=overlay`) and the Sarä widget (`?win=widget`). src/main.tsx switches on this flag
+// and mounts a different React root instead of the full app shell.
+//
+// Same hard rule as buildSessionWindowUrl above: the flag MUST sit in the query string BEFORE the
+// '#'. Everything after the '#' is the HashRouter's route — put `win=widget` there and the surface
+// silently never mounts, because window.location.search would be empty.
+function buildSurfaceWindowUrl(surface, { devServer, rendererIndexPath } = {}) {
+  const query = `?win=${encodeURIComponent(surface)}`
+  const route = '#/'
+
+  if (devServer) {
+    const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
+
+    return `${base}/${query}${route}`
+  }
+
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
+}
+
 // A small registry keyed by sessionId that guarantees one window per chat:
 // opening a session that already has a live window focuses it instead of
 // spawning a duplicate, and a window removes itself from the registry when it
@@ -117,6 +137,7 @@ function createSessionWindowRegistry() {
 
 module.exports = {
   buildSessionWindowUrl,
+  buildSurfaceWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,

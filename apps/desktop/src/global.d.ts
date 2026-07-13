@@ -4,12 +4,27 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
+import type { SaraLearning, SaraWidgetState, SaraWorkspace } from './store/sara'
 
 export {}
 
 declare global {
   interface Window {
     hermesDesktop: {
+      /**
+       * Sarä widget. The setters RESOLVE WITH THE SETTLED STATE — a cancelled consent dialog comes
+       * back unchanged — so the renderer never has to guess and then unwind. There is deliberately
+       * no way to set `recording`: it is the connector's truth, mirrored, never asserted by the UI.
+       */
+      sara?: {
+        get: () => Promise<SaraWidgetState>
+        setWorkspace: (mode: SaraWorkspace) => Promise<SaraWidgetState>
+        setLearning: (mode: SaraLearning) => Promise<SaraWidgetState>
+        openWebApp: () => Promise<{ ok: boolean }>
+        quit: () => Promise<{ ok: boolean }>
+        /** Live push from the main-process store. Returns an unsubscribe. */
+        onState: (callback: (state: SaraWidgetState) => void) => () => void
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.

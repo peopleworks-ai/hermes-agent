@@ -1,0 +1,211 @@
+import type { ReactNode } from 'react'
+
+import { cn } from '@/lib/utils'
+import {
+  SARA_LEARNING_HINT,
+  SARA_LEARNING_LABEL,
+  SARA_WORKSPACE_HINT,
+  SARA_WORKSPACE_LABEL,
+  type SaraLearning,
+  type SaraWidgetState,
+  type SaraWorkspace,
+  watchLabel
+} from '@/store/sara'
+
+import { useSaraState } from './use-sara-state'
+
+const WORKSPACES: SaraWorkspace[] = ['pause', 'chrome', 'whole']
+const LEARNINGS: SaraLearning[] = ['off', 'ask', 'watch']
+
+function WidgetCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-lg border border-border bg-card p-3">
+      <h2 className="mb-2 text-[0.625rem] font-semibold uppercase tracking-wider text-muted-foreground">{title}</h2>
+      {children}
+    </section>
+  )
+}
+
+/**
+ * A radio row rather than a one-line SegmentedControl: the labels are sentences
+ * ("Ask Sarä to learn on her own"), and a 380px window has no room to squeeze three of those onto
+ * one line. It also keeps the tray's semantics — these are mutually exclusive modes, not tabs.
+ */
+function RadioRow({
+  label,
+  hint,
+  checked,
+  danger,
+  onSelect
+}: {
+  label: string
+  hint: string
+  checked: boolean
+  danger?: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button
+      aria-checked={checked}
+      className={cn(
+        'flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors',
+        checked ? 'bg-accent' : 'hover:bg-accent/50'
+      )}
+      onClick={onSelect}
+      role="radio"
+      type="button"
+    >
+      <span
+        className={cn(
+          'mt-[3px] size-3 shrink-0 rounded-full border',
+          checked
+            ? danger
+              ? 'border-red-500 bg-red-500'
+              : 'border-primary bg-primary'
+            : 'border-muted-foreground/40'
+        )}
+      />
+      <span className="min-w-0">
+        <span className="block text-xs font-medium text-foreground">{label}</span>
+        <span className="block text-[0.6875rem] leading-snug text-muted-foreground">{hint}</span>
+      </span>
+    </button>
+  )
+}
+
+/**
+ * The status pill. It renders `recording` — the connector's truth — and NOT the `learning` radio.
+ * That distinction is the whole point of the state refactor: the widget used to be able to show
+ * "Off" while sara-capture was uploading the screen. "Armed" is a real, honest third state (the
+ * capture is starting, or failed to), and it must not be dressed up as a live recording.
+ */
+function StatusPill({ state }: { state: SaraWidgetState }) {
+  if (state.recording) {
+    return (
+      <span className="flex items-center gap-1.5 rounded-full bg-red-500/15 px-2 py-0.5 text-[0.625rem] font-semibold text-red-600 dark:text-red-400">
+        <span className="size-1.5 animate-pulse rounded-full bg-red-500" />
+        Recording · {watchLabel(state.watch)}
+      </span>
+    )
+  }
+
+  if (state.learning === 'watch') {
+    return (
+      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[0.625rem] font-semibold text-amber-600 dark:text-amber-400">
+        Watch armed — not recording
+      </span>
+    )
+  }
+
+  return (
+    <span className="rounded-full bg-muted px-2 py-0.5 text-[0.625rem] font-medium text-muted-foreground">
+      {state.workspace === 'pause' ? 'Paused' : 'Idle'}
+    </span>
+  )
+}
+
+export function SaraWidgetApp() {
+  const { state, setWorkspace, setLearning, openWebApp, quit } = useSaraState()
+
+  return (
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      {/* titleBarStyle:'hidden' means the OS paints only the ✕ — this strip has to BE the titlebar,
+          or the window cannot be moved at all. Same Tailwind arbitrary-property trick the rest of
+          the app uses (thread/list.tsx, pane-shell.tsx) rather than an inline style, which TS would
+          reject: WebkitAppRegion isn't on CSSProperties. */}
+      <header className="flex items-center justify-between gap-2 border-b border-border px-3 pb-2 pt-[calc(var(--titlebar-height,34px)*0.6+0.25rem)] [-webkit-app-region:drag]">
+        <span className="flex items-center gap-1.5 text-sm font-semibold">
+          <span className="size-2 rounded-full bg-primary" />
+          Sarä
+        </span>
+        <StatusPill state={state} />
+      </header>
+
+      <div className="flex-1 space-y-2.5 overflow-y-auto p-3">
+        <WidgetCard title="Sarä Workspace">
+          <div className="space-y-0.5" role="radiogroup">
+            {WORKSPACES.map(mode => (
+              <RadioRow
+                checked={state.workspace === mode}
+                hint={SARA_WORKSPACE_HINT[mode]}
+                key={mode}
+                label={SARA_WORKSPACE_LABEL[mode]}
+                onSelect={() => void setWorkspace(mode)}
+              />
+            ))}
+          </div>
+        </WidgetCard>
+
+        <WidgetCard title="Learning Mode">
+          <div className="space-y-0.5" role="radiogroup">
+            {LEARNINGS.map(mode => (
+              <RadioRow
+                checked={state.learning === mode}
+                danger={mode === 'watch'}
+                hint={SARA_LEARNING_HINT[mode]}
+                key={mode}
+                label={SARA_LEARNING_LABEL[mode]}
+                onSelect={() => void setLearning(mode)}
+              />
+            ))}
+          </div>
+          {state.recording ? (
+            <button
+              className="mt-2 w-full rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[0.6875rem] font-semibold text-red-600 hover:bg-red-500/20 dark:text-red-400"
+              onClick={() => void setLearning('off')}
+              type="button"
+            >
+              Stop watching
+            </button>
+          ) : null}
+        </WidgetCard>
+
+        <WidgetCard title="Current Work">
+          {!state.paired ? (
+            <div className="py-2 text-center">
+              <p className="text-xs font-medium text-foreground">Not connected</p>
+              <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
+                Link this computer to your account from the web app.
+              </p>
+              <button
+                className="mt-2 rounded-md border border-border px-2 py-1 text-[0.6875rem] font-medium hover:bg-accent"
+                onClick={openWebApp}
+                type="button"
+              >
+                Connect this device
+              </button>
+            </div>
+          ) : state.currentWork.length === 0 ? (
+            <p className="py-2 text-center text-[0.6875rem] text-muted-foreground">Nothing running</p>
+          ) : (
+            <ul className="space-y-1">
+              {state.currentWork.map((w, i) => (
+                <li className="flex items-start gap-2 text-xs" key={`${w.label}-${i}`}>
+                  <span className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+                  <span className="min-w-0 truncate text-foreground">{w.label}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </WidgetCard>
+      </div>
+
+      <footer className="flex items-center justify-between gap-2 border-t border-border p-2">
+        <button
+          className="rounded-md px-2 py-1 text-[0.6875rem] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={openWebApp}
+          type="button"
+        >
+          Open Sarä Web App
+        </button>
+        <button
+          className="rounded-md px-2 py-1 text-[0.6875rem] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+          onClick={quit}
+          type="button"
+        >
+          Quit Sarä
+        </button>
+      </footer>
+    </div>
+  )
+}

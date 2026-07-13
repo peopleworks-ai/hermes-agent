@@ -3,9 +3,28 @@ const test = require('node:test')
 
 const {
   buildSessionWindowUrl,
+  buildSurfaceWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry
 } = require('./session-windows.cjs')
+
+// The Sarä widget and the pet overlay are non-chat surfaces in the same bundle, selected by
+// ?win=…. The flag MUST land in the query string, BEFORE the '#': anything after the '#' belongs to
+// the HashRouter, so a `#/?win=widget` would leave window.location.search empty and the surface
+// would silently never mount — a blank window with no error anywhere.
+test('buildSurfaceWindowUrl puts the surface flag BEFORE the hash (dev server)', () => {
+  const url = buildSurfaceWindowUrl('widget', { devServer: 'http://127.0.0.1:5174/' })
+
+  assert.equal(url, 'http://127.0.0.1:5174/?win=widget#/')
+  assert.ok(url.indexOf('?win=widget') < url.indexOf('#'), 'the flag must precede the hash')
+})
+
+test('buildSurfaceWindowUrl builds a file URL for a packaged build', () => {
+  const url = buildSurfaceWindowUrl('widget', { rendererIndexPath: '/app/dist/index.html' })
+
+  assert.ok(url.startsWith('file://'))
+  assert.ok(url.endsWith('?win=widget#/'))
+})
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the

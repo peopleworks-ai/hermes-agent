@@ -30,6 +30,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
   buildSessionWindowUrl,
+  buildSurfaceWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   SESSION_WINDOW_MIN_HEIGHT,
@@ -5718,6 +5719,13 @@ function wireCommonWindowHandlers(win) {
 // builder live in session-windows.cjs so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
 
+// ── Sarä widget ─────────────────────────────────────────────────────────────
+// The widget window is a SECOND view over sara-state (the tray is the first). Its own registry, not
+// a magic key in `sessionWindows`, so a chat session id can never collide with it.
+const SARA_WEB_APP_URL = 'https://hcos.peopleworks.ai/people/sarah'
+const saraWidgetWindows = createSessionWindowRegistry()
+let saraStore = null
+
 function focusWindow(win) {
   if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
@@ -5787,6 +5795,73 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
 // later converts to a real session must not get refocused as if it were blank.
 function createNewSessionWindow() {
   return spawnSecondaryWindow({ newSession: true })
+}
+
+// ── The Sarä widget window ──────────────────────────────────────────────────
+// A compact second view over sara-state (the tray is the first): Workspace, Learning Mode, live
+// Current Work. Same renderer bundle, different root — src/main.tsx switches on ?win=widget.
+//
+// Deliberately NOT frameless and NOT always-on-top, unlike the pet overlay. The overlay is an
+// ornament; this window has actionable controls, including the one that turns a screen recorder on.
+// `titleBarStyle:'hidden'` keeps it compact while KEEPING the native ✕ — shipping a window a user
+// might not be able to dismiss is the worst failure mode available on a GUI we cannot test here.
+// Always-on-top belongs behind an explicit pin, later; the tray is already the always-reachable
+// surface. backgroundThrottling:false comes with chatWindowWebPreferences and is load-bearing:
+// Chromium pauses timers in blurred windows, and Current Work must keep ticking while you work.
+function spawnSaraWidgetWindow() {
+  const win = new BrowserWindow({
+    width: 380,
+    height: 560,
+    minWidth: 340,
+    minHeight: 460,
+    title: 'Sarä',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    opacity: windowOpacity(),
+    icon: getAppIconPath(),
+    maximizable: false,
+    fullscreenable: false,
+    show: false, // ready-to-show: same themed-first-paint guard as spawnSecondaryWindow
+    backgroundColor: getWindowBackgroundColor(),
+    webPreferences: chatWindowWebPreferences(path.join(__dirname, 'preload.cjs'))
+  })
+
+  if (IS_MAC) win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show()
+  })
+
+  wireCommonWindowHandlers(win)
+
+  win.loadURL(
+    buildSurfaceWindowUrl('widget', {
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    })
+  )
+
+  return win
+}
+
+// Singleton: clicking the tray again focuses the widget rather than spawning a second one.
+function openSaraWidgetWindow() {
+  return saraWidgetWindows.openOrFocus('widget', spawnSaraWidgetWindow)
+}
+
+// Push state to the widget window whenever the store changes, so it updates live instead of
+// polling. Called once the store exists; safe if the window isn't open.
+function broadcastSaraState(state) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    try {
+      win.webContents.send('hermes:sara:state', state)
+    } catch {
+      /* a closing window is not an error */
+    }
+  }
 }
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -6120,6 +6195,46 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 })
 ipcMain.handle('hermes:window:openNewSession', async () => {
   createNewSessionWindow()
+
+  return { ok: true }
+})
+
+// ── Sarä widget ─────────────────────────────────────────────────────────────
+// The widget window drives the SAME store the tray does. The setters RETURN the settled state, so a
+// cancelled dialog resolves with the state unchanged and the renderer never has to guess — it never
+// shows an optimistic segment it then has to unwind. Live updates arrive by push
+// (hermes:sara:state), not polling; see broadcastSaraState.
+const SARA_DEFAULT_STATE = { workspace: 'chrome', learning: 'off', watch: { screen: false, voice: false }, recording: false, currentWork: [], paired: false }
+
+ipcMain.handle('hermes:sara:get', async () => (saraStore ? saraStore.getState() : SARA_DEFAULT_STATE))
+
+ipcMain.handle('hermes:sara:setWorkspace', async (event, mode) => {
+  if (!saraStore) return SARA_DEFAULT_STATE
+  // Parent the confirm dialog to the window that asked, so it can't open behind the widget.
+  const parent = BrowserWindow.fromWebContents(event.sender)
+  return saraStore.setWorkspace(mode, { parent })
+})
+
+ipcMain.handle('hermes:sara:setLearning', async (event, mode) => {
+  if (!saraStore) return SARA_DEFAULT_STATE
+  const parent = BrowserWindow.fromWebContents(event.sender)
+  return saraStore.setLearning(mode, { parent })
+})
+
+ipcMain.handle('hermes:sara:openWebApp', async () => {
+  require('./sara-dialogs.cjs').openExternal(SARA_WEB_APP_URL)
+
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:sara:openWidget', async () => {
+  openSaraWidgetWindow()
+
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:sara:quit', async () => {
+  app.quit()
 
   return { ok: true }
 })
@@ -7588,46 +7703,56 @@ app.whenReady().then(() => {
   registerPowerResumeListeners()
   createWindow()
 
-  // Sarä widget (fork ADD, brief §5): the menubar/tray. Additive + guarded so a
-  // tray failure never blocks boot. Callbacks are stubs for now — wired to the
-  // connector / Chrome Sara / hcos Current Work in later slices.
+  // Sarä widget (fork ADD, brief §5). Additive + guarded so a failure here never blocks boot.
+  //
+  // The store (sara-state.cjs) is the ONE owner of {workspace, learning, watch, recording,
+  // currentWork, paired}. The tray is a view over it; the widget window is a second view. main.cjs
+  // no longer switches on the mode at all — it just injects the real adapters and lets the store's
+  // effects run. That is what stopped the menu from being able to say "Learning: Off" while
+  // sara-capture was uploading the user's screen.
   try {
     const saraPath = require('node:path')
     const { initSaraTray } = require('./sara-tray.cjs')
+    const { createSaraStore } = require('./sara-state.cjs')
+    const saraDialogs = require('./sara-dialogs.cjs')
     const saraConn = require('./sara-connector.cjs')
     const saraChrome = require('./sara-chrome.cjs')
-    // Start the connector: pairing server (hcos "Connect" → here), no-key LLM
-    // sidecar, Hermes auto-config, and the task-bridge poll. Runs inside the
-    // widget — no separate .py needed.
+
+    // Start the connector: pairing server (hcos "Connect" → here), no-key LLM sidecar, Hermes
+    // auto-config, and the task-bridge poll. NOTE it also resumes a persisted watch — which is
+    // precisely why the store hydrates from the same config, so the UI can't disagree with it.
     saraConn.start(app.getPath('userData'))
-    // Chrome Sara (§5): the visible, persistent-login browser Hermes drives via
-    // CDP (browser.cdp_url set by the connector auto-config). LAZY — NOT launched
-    // on start. The connector's LLM sidecar launches it just-in-time the moment
-    // Hermes decides to use a browser tool; the tray can also start/stop it.
-    const launchChrome = () =>
-      saraChrome.launch().then((u) => console.log('[sara] Chrome Sara CDP:', u)).catch((e) => console.error('[sara] Chrome launch:', (e && e.message) || e))
+
+    // Chrome Sara (§5): the visible, persistent-login browser Hermes drives via CDP. LAZY — the
+    // connector's sidecar launches it just-in-time when Hermes reaches for a browser tool; the
+    // store also starts/stops it on a workspace change.
+    const saraChromeAdapter = {
+      launch: () =>
+        saraChrome
+          .launch()
+          .then((u) => console.log('[sara] Chrome Sara CDP:', u))
+          .catch((e) => console.error('[sara] Chrome launch:', (e && e.message) || e)),
+      quit: () => saraChrome.quit(),
+    }
+
+    saraStore = createSaraStore({
+      connector: saraConn,
+      chrome: saraChromeAdapter,
+      dialogs: saraDialogs,
+      webAppUrl: SARA_WEB_APP_URL,
+    })
+    saraStore.hydrateFromConnector() // ← adopts the connector's persisted watch as the truth
+    saraStore.startCurrentWorkPoll(8000) // one poll now feeds BOTH surfaces
+    saraStore.subscribe(broadcastSaraState) // widget window updates by push, never by polling
+
     initSaraTray(app, {
+      store: saraStore,
       iconPath: saraPath.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
-      webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
-      getCurrentWork: async () => saraConn.getCurrentWork(),
-      onWorkspaceChange: (mode) => {
-        saraConn.setPaused(mode === 'pause')
-        if (mode === 'pause') saraChrome.quit()
-        else if (mode === 'chrome') launchChrome()
-      },
-      onLearningChange: (mode, modes) => {
-        console.log('[sara] learning=' + mode + (modes ? ` (screen=${modes.screen} voice=${modes.voice})` : ''))
-        if (mode === 'watch') {
-          saraConn
-            .startWatch(modes)
-            .catch((e) => console.error('[sara] startWatch failed:', (e && e.message) || e))
-        } else if (mode === 'off') {
-          saraConn.stopWatch().catch(() => {})
-        }
-      },
+      onOpenWidget: () => openSaraWidgetWindow(),
+      onOpenWebApp: () => saraDialogs.openExternal(SARA_WEB_APP_URL),
     })
   } catch (e) {
-    console.error('[sara] tray init failed:', (e && e.message) || e)
+    console.error('[sara] widget init failed:', (e && e.message) || e)
   }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.

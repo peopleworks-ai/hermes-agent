@@ -1,25 +1,22 @@
 'use strict'
 /**
- * Sarä menubar/tray — the widget UI from the brief (§5).
+ * Sarä menubar/tray — a VIEW over sara-state, nothing more.
  *
- * Self-contained ADD module (part of the "subtraction on Hermes Desktop" fork).
- * Standard Electron Tray + Menu; wire it from main.cjs on app.whenReady():
+ * It used to own the widget's state in a closure, which is how the menu ended up able to say
+ * "LEARNING MODE: Off" while the screen was being captured (see sara-state.cjs). It now renders
+ * `store.getState()` and forwards clicks to `store.setWorkspace/setLearning`. The transition rules,
+ * the dialogs, the toasts and the Current Work poll all moved to the store, so the tray and the
+ * widget window are two views of ONE truth instead of two copies of it.
  *
- *   const { initSaraTray } = require('./sara-tray.cjs')
- *   initSaraTray(app, {
- *     iconPath: path.join(__dirname, '..', 'assets', 'icon.png'),
- *     webAppUrl: 'https://hcos.peopleworks.ai/people/sarah',
- *     getCurrentWork: async () => [{ label: 'Posting job ad on JobStreet' }, ...],
- *     onWorkspaceChange: (mode) => {},  // mode: 'pause' | 'chrome' | 'whole'
- *     onLearningChange:  (mode) => {},  // mode: 'off' | 'ask' | 'watch'
- *     onOpenWebApp: () => {},           // open the web app window/browser
- *   })
+ *   const store = createSaraStore({ connector, chrome, dialogs, webAppUrl })
+ *   store.hydrateFromConnector(); store.startCurrentWorkPoll()
+ *   initSaraTray(app, { store, iconPath, onOpenWidget, onOpenWebApp })
  *
- * The callbacks are where the fork hooks Sarä's real behaviour (Chrome Sara
- * lifecycle, Omi capture, the connector's task bridge + no-key sidecar). This
- * module only owns the menu, the mode state, and the popup rules from §5.
+ * Cancel semantics are preserved exactly: a declined dialog produces no state change, and the store
+ * still emits, so the radio Electron had already visually toggled snaps back.
  */
-const { Tray, Menu, nativeImage, dialog, Notification, shell } = require('electron')
+const { Tray, Menu, nativeImage } = require('electron')
+const { WORKSPACE, LEARNING, watchLabel } = require('./sara-copy.cjs')
 
 // Always return a VISIBLE tray image. If the icon file is missing/empty (a common
 // cause of an invisible tray on Windows), fall back to a solid indigo square so
@@ -47,213 +44,89 @@ function loadTrayIcon(iconPath) {
   return img
 }
 
-// Menu copy — exactly the brief's §5 labels.
-const WORKSPACE = {
-  pause: 'Pause',
-  chrome: "Sara's Google Chrome Browser",
-  whole: 'Whole Computer',
-}
-const LEARNING = {
-  off: 'Off',
-  ask: 'Ask Sara To Learn On Its Own or From References',
-  watch: 'Sara Learn By Watching Me',
-}
-const POPUP = {
-  chrome: 'Sara will work only inside her own browser. She cannot see or access anything outside it.',
-  whole:
-    'Sara can now use all apps on this computer, with security guardrails active. We advise avoiding personal usage while this mode is on.',
-  watch:
-    'Sara will watch how you work and build work memory from it. This requires Whole Computer access — turning it on now.',
-}
-
 function initSaraTray(app, opts = {}) {
-  const {
-    iconPath,
-    webAppUrl = 'https://hcos.peopleworks.ai/people/sarah',
-    getCurrentWork = async () => [],
-    onWorkspaceChange = () => {},
-    onLearningChange = () => {},
-    onOpenWebApp = null,
-    currentWorkIntervalMs = 8000,
-  } = opts
-
-  const state = {
-    workspace: 'chrome', // default on startup (§5)
-    learning: 'off',
-    currentWork: [],
-    watchModes: null, // { screen, voice } while Learning = Watch
-  }
+  const { store, iconPath, onOpenWidget = null, onOpenWebApp = null } = opts
+  if (!store) throw new Error('initSaraTray: a sara-state store is required')
 
   const img = loadTrayIcon(iconPath)
   // macOS menubar wants a small template image; Windows/Linux use the icon as-is.
   const trayImg = process.platform === 'darwin' ? img.resize({ width: 18, height: 18 }) : img
   const tray = new Tray(trayImg)
-  tray.setToolTip('Sarä')
   console.log('[sara] tray created ✓ — look in the system tray (Windows: click ^ to show hidden icons)')
-
-  function toast(body) {
-    try {
-      if (Notification.isSupported()) new Notification({ title: 'Sarä', body }).show()
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  function confirmWholeComputer() {
-    const res = dialog.showMessageBoxSync({
-      type: 'warning',
-      buttons: ['Turn on Whole Computer', 'Cancel'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Sarä — Whole Computer',
-      message: WORKSPACE.whole,
-      detail: POPUP.whole,
-    })
-    return res === 0
-  }
-
-  // §5 Learn-by-Watching consent: the user chooses what Sarä may capture.
-  // Returns { screen, voice } or null (cancelled).
-  function chooseWatchModes() {
-    const res = dialog.showMessageBoxSync({
-      type: 'question',
-      buttons: ['Screen + Voice', 'Voice only', 'Screen only', 'Cancel'],
-      defaultId: 0,
-      cancelId: 3,
-      title: 'Sarä — Learn by Watching',
-      message: 'Let Sarä learn how you work',
-      detail:
-        'Sarä will build private work memory + skills from what you allow below. ' +
-        'It stays yours — you can stop anytime from this menu.\n\n' +
-        '• Screen — periodic snapshots of your activity (active window + on-screen text)\n' +
-        '• Voice — your meetings (microphone)\n\n' +
-        'Your operating system may ask for Screen Recording / Microphone permission next.',
-    })
-    if (res === 0) return { screen: true, voice: true }
-    if (res === 1) return { screen: false, voice: true }
-    if (res === 2) return { screen: true, voice: false }
-    return null // Cancel
-  }
-
-  function watchLabel(m) {
-    if (!m) return ''
-    return m.screen && m.voice ? 'Screen + Voice' : m.voice ? 'Voice' : 'Screen'
-  }
-
-  // ── Workspace transitions (with §5 rules) ──────────────────────────────
-  function setWorkspace(mode) {
-    if (mode === state.workspace) return rebuild()
-    if (mode === 'whole') {
-      if (!confirmWholeComputer()) return rebuild() // reverts the radio
-      state.workspace = 'whole'
-    } else if (mode === 'chrome') {
-      // Leaving Whole Computer while Watching is on → Watching can't continue.
-      if (state.learning === 'watch') {
-        state.learning = 'off'
-        state.watchModes = null
-        toast('Watching paused — needs Whole Computer')
-        onLearningChange('off')
-      }
-      state.workspace = 'chrome'
-      toast(POPUP.chrome)
-    } else if (mode === 'pause') {
-      state.workspace = 'pause'
-    }
-    onWorkspaceChange(state.workspace)
-    rebuild()
-  }
-
-  // ── Learning transitions (with §5 rules) ───────────────────────────────
-  function setLearning(mode) {
-    if (mode === state.learning) return rebuild()
-    if (mode === 'ask') {
-      state.learning = 'ask'
-      onLearningChange('ask')
-      openWebApp() // §5: opens the AI Personal Assistant chat
-    } else if (mode === 'watch') {
-      const modes = chooseWatchModes()
-      if (!modes) return rebuild() // cancelled → revert the radio
-      state.learning = 'watch'
-      state.watchModes = modes
-      // Watch Me requires Whole Computer — auto-switch (the consent dialog covered it).
-      if (state.workspace !== 'whole') {
-        state.workspace = 'whole'
-        onWorkspaceChange('whole')
-      }
-      onLearningChange('watch', modes) // { screen, voice } → connector registers + captures
-    } else {
-      state.learning = 'off'
-      state.watchModes = null
-      onLearningChange('off')
-    }
-    rebuild()
-  }
-
-  function openWebApp() {
-    if (onOpenWebApp) return onOpenWebApp()
-    shell.openExternal(webAppUrl)
-  }
 
   function radio(label, checked, click) {
     return { label, type: 'radio', checked, click }
   }
 
   function rebuild() {
-    const cw = state.currentWork.length
-      ? state.currentWork.map((w) => ({ label: `▸ ${w.label}`, enabled: false }))
+    const s = store.getState()
+
+    const cw = s.currentWork.length
+      ? s.currentWork.map((w) => ({ label: `▸ ${w.label}`, enabled: false }))
       : [{ label: 'Nothing running', enabled: false }]
 
-    const menu = Menu.buildFromTemplate([
+    // The watching line is driven by `recording` (connector truth), NOT by the radio. Armed but not
+    // yet capturing is a real state (the async resume, or a failed one) and it must not show as a
+    // live capture — nor may a live capture hide behind an "Off" radio.
+    const watchLine = []
+    if (s.recording) {
+      watchLine.push({ label: `   👁️ Watching: ${watchLabel(s.watch)}`, enabled: false })
+    } else if (s.learning === 'watch') {
+      watchLine.push({ label: '   ⏳ Watch armed — not recording', enabled: false })
+    }
+
+    const template = []
+    if (onOpenWidget) {
+      template.push({ label: 'Open Sarä Widget', click: () => onOpenWidget() })
+      template.push({ type: 'separator' })
+    }
+    template.push(
       { label: '● Sarä', enabled: false },
       { type: 'separator' },
       { label: 'SARA WORKSPACE', enabled: false },
-      radio(WORKSPACE.pause, state.workspace === 'pause', () => setWorkspace('pause')),
-      radio(WORKSPACE.chrome + '  ⟵ default', state.workspace === 'chrome', () => setWorkspace('chrome')),
-      radio(WORKSPACE.whole, state.workspace === 'whole', () => setWorkspace('whole')),
+      radio(WORKSPACE.pause, s.workspace === 'pause', () => store.setWorkspace('pause')),
+      radio(WORKSPACE.chrome + '  ⟵ default', s.workspace === 'chrome', () => store.setWorkspace('chrome')),
+      radio(WORKSPACE.whole, s.workspace === 'whole', () => store.setWorkspace('whole')),
       { type: 'separator' },
       { label: 'LEARNING MODE', enabled: false },
-      radio(LEARNING.off, state.learning === 'off', () => setLearning('off')),
-      radio(LEARNING.ask, state.learning === 'ask', () => setLearning('ask')),
-      radio(LEARNING.watch, state.learning === 'watch', () => setLearning('watch')),
-      ...(state.learning === 'watch'
-        ? [{ label: `   👁️ Watching: ${watchLabel(state.watchModes)}`, enabled: false }]
-        : []),
+      radio(LEARNING.off, s.learning === 'off', () => store.setLearning('off')),
+      radio(LEARNING.ask, s.learning === 'ask', () => store.setLearning('ask')),
+      radio(LEARNING.watch, s.learning === 'watch', () => store.setLearning('watch')),
+      ...watchLine,
       { type: 'separator' },
       { label: 'CURRENT WORK', enabled: false },
       ...cw,
       { type: 'separator' },
-      { label: 'Open Sara Web App', click: openWebApp },
-      { label: 'Quit Sarä', role: 'quit' },
-    ])
-    tray.setContextMenu(menu)
-  }
+      { label: 'Open Sara Web App', click: () => onOpenWebApp && onOpenWebApp() },
+      { label: 'Quit Sarä', role: 'quit' }
+    )
 
-  // Live Current Work feed (dummy-feed OK per §5 exit gate).
-  async function refreshCurrentWork() {
-    try {
-      const items = await getCurrentWork()
-      if (Array.isArray(items)) {
-        state.currentWork = items
-        rebuild()
-      }
-    } catch {
-      /* keep last */
-    }
+    tray.setContextMenu(Menu.buildFromTemplate(template))
+    // An honest tooltip: hovering the tray must tell you whether you are being recorded.
+    tray.setToolTip(s.recording ? `Sarä — Watching (${watchLabel(s.watch)})` : 'Sarä')
   }
 
   rebuild()
-  refreshCurrentWork()
-  const timer = setInterval(refreshCurrentWork, currentWorkIntervalMs)
-  app.on('before-quit', () => clearInterval(timer))
+  const unsubscribe = store.subscribe(rebuild)
 
-  return {
-    tray,
-    getState: () => ({ ...state }),
-    setCurrentWork: (items) => {
-      state.currentWork = items || []
-      rebuild()
-    },
+  // Left-click opens the widget window (the Windows/Linux "Apploye feel"); right-click still gets
+  // the menu. macOS swallows the left-click when a context menu is set, which is exactly why
+  // "Open Sarä Widget" also exists as a menu item — a click handler alone would be a mac dead end.
+  if (onOpenWidget) {
+    tray.on('click', () => onOpenWidget())
+    tray.on('double-click', () => onOpenWidget())
   }
+
+  app.on('before-quit', () => {
+    try {
+      unsubscribe()
+      tray.destroy()
+    } catch {
+      /* shutting down anyway */
+    }
+  })
+
+  return { tray, rebuild, unsubscribe }
 }
 
-module.exports = { initSaraTray }
+module.exports = { initSaraTray, loadTrayIcon }
