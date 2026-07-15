@@ -268,6 +268,35 @@ test('syncRecording is SELF-CORRECTING: a live capture drags the indicator to Wa
   assert.ok(recordingIsHonest(s))
 })
 
+// ── toolset gating: the workspace must reach the connector, or Chrome is a label ─────
+test('changing workspace emits a toolset effect carrying the new mode', () => {
+  const a = reduceWorkspace(DEFAULT_STATE, 'whole', { confirmed: true })
+  assert.deepEqual(
+    a.effects.find(e => e.type === 'toolset'),
+    { type: 'toolset', mode: 'whole' }
+  )
+  const b = reduceWorkspace({ ...DEFAULT_STATE, workspace: 'whole' }, 'chrome')
+  assert.deepEqual(
+    b.effects.find(e => e.type === 'toolset'),
+    { type: 'toolset', mode: 'chrome' }
+  )
+})
+
+test('the store pushes the workspace to the connector on change AND on hydrate', async () => {
+  const { connector, chrome, dialogs } = makeFakes({ config: { sara: { workspace: 'whole' } } })
+  const pushed = []
+  connector.setToolsetMode = m => pushed.push(m)
+  connector.isToolsetGatingAvailable = () => true
+
+  const store = createSaraStore({ connector, chrome, dialogs })
+  store.hydrateFromConnector()
+  assert.equal(pushed.at(-1), 'whole', 'hydrate must push the restored mode so the first task is gated right')
+  assert.equal(store.getState().gated, true, 'gated is read live from the connector probe')
+
+  await store.setWorkspace('pause')
+  assert.equal(pushed.at(-1), 'pause')
+})
+
 // ── 11. persistence must MERGE, never clobber the creds ─────────────────────
 test('the store persists only {sara:{…}} and never drops the pairing creds', async () => {
   const { connector, chrome, dialogs, calls } = makeFakes({

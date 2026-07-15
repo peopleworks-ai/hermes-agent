@@ -18,6 +18,12 @@ export interface SaraWidgetState {
   recording: boolean
   currentWork: { label: string }[]
   paired: boolean
+  /**
+   * Is "Chrome restricts Sarä to her browser" a REAL boundary on this machine, or just a label?
+   * True only when the boot probe confirmed the installed Hermes understands --toolsets. When
+   * false, the Chrome-mode copy says so rather than pretending.
+   */
+  gated: boolean
 }
 
 /** Used until the first IPC round-trip lands — and when the surface is opened in a plain browser. */
@@ -27,7 +33,8 @@ export const SARA_DEFAULT_STATE: SaraWidgetState = {
   watch: { screen: false, voice: false },
   recording: false,
   currentWork: [],
-  paired: false
+  paired: false,
+  gated: false
 }
 
 // Mirrors electron/sara-copy.cjs. Kept short here — the long consent text lives in the dialogs the

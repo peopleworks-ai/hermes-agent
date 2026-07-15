@@ -287,6 +287,79 @@ function extractAnswer(raw) {
   return lines.filter((l) => l.trim() && !junk.test(l)).map((l) => l.replace(/^[│|]?\s*/, '').trim()).join('\n').trim()
 }
 
+// ── Workspace → toolset gating ───────────────────────────────────────────────
+// "Whole Computer" used to be a LABEL: every mode ran Hermes with its full default toolset, so a
+// dialog promising "Sara can now use all apps" was equally true in Chrome mode. Now the workspace
+// actually restricts what Hermes can touch — Chrome gets browser/web only (no terminal, no file
+// system), Whole Computer gets everything.
+//
+// DEFENSIVE, because this box can't run `hermes`: we do NOT pass --toolsets unless a boot probe has
+// CONFIRMED the installed Hermes understands it. Passing an unknown flag would fail every task; an
+// unverifiable restriction must degrade to today's behaviour (ungated) AND to honest copy, never to
+// a crash. `isToolsetGatingAvailable()` reports the probe result so the UI can tell the truth about
+// whether the boundary is real.
+const CHROME_TOOLSETS = 'browser,web,vision,skills,todo' // deliberately NO terminal, NO file
+let toolsetMode = 'chrome' // §5 default; the store pushes the real one via setToolsetMode
+let toolsetGating = false // flipped true only if the probe succeeds
+
+function setToolsetMode(mode) {
+  toolsetMode = mode === 'whole' ? 'whole' : mode === 'pause' ? 'pause' : 'chrome'
+}
+function isToolsetGatingAvailable() {
+  return toolsetGating
+}
+
+// One-shot: does `hermes chat --list-toolsets` work AND mention the browser toolset? If so the CLI
+// speaks --toolsets and we can trust the gating. Anything else (unknown flag, missing binary, a
+// timeout) leaves gating OFF.
+function probeToolsets() {
+  return new Promise((resolve) => {
+    let out = ''
+    let done = false
+    const finish = (ok) => {
+      if (done) return
+      done = true
+      toolsetGating = ok
+      console.log(`[sara] toolset gating ${ok ? 'AVAILABLE — Chrome mode restricts Sarä to the browser' : 'unavailable — Whole Computer / Chrome are labels only on this Hermes'}`)
+      resolve(ok)
+    }
+    let child
+    try {
+      child = spawn(HERMES, ['chat', '--list-toolsets'], { windowsHide: true })
+    } catch {
+      return finish(false)
+    }
+    const t = setTimeout(() => {
+      try {
+        child.kill()
+      } catch {}
+      finish(false)
+    }, 12000)
+    child.stdout && child.stdout.on('data', (d) => (out += d))
+    child.on('error', () => {
+      clearTimeout(t)
+      finish(false)
+    })
+    child.on('close', (code) => {
+      clearTimeout(t)
+      finish(code === 0 && /\bbrowser\b/i.test(out))
+    })
+  })
+}
+
+// Pure (exported for tests): the args for a task spawn given a gating flag + workspace mode. Whole
+// Computer (or an un-probed Hermes) → no flag → Hermes's full default toolset. Chrome → the
+// browser-only set, but ONLY when the probe confirmed --toolsets is understood.
+function buildChatArgs(prompt, gating, mode) {
+  if (gating && mode === 'chrome') {
+    return ['chat', '--toolsets', CHROME_TOOLSETS, '-q', prompt]
+  }
+  return ['chat', '-q', prompt]
+}
+function hermesChatArgs(prompt) {
+  return buildChatArgs(prompt, toolsetGating, toolsetMode)
+}
+
 // Run via `hermes chat -q` (shows tool activity, unlike the silent `-z`) and
 // stream the tool lines out via onProgress so the Sarä chat shows live steps.
 function runHermes(prompt, onProgress) {
@@ -314,7 +387,7 @@ function runHermes(prompt, onProgress) {
     const scanErr = scanFactory()
     let child
     try {
-      child = spawn(HERMES, ['chat', '-q', prompt], { windowsHide: true })
+      child = spawn(HERMES, hermesChatArgs(prompt), { windowsHide: true })
     } catch (e) {
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
     }
@@ -505,6 +578,9 @@ function start(dir, onPaired) {
   ensureHermesConfig()
   if (!pollTimer) pollTimer = setInterval(pollOnce, POLL_MS)
   resumeWatchIfEnabled()
+  // Async — tasks spawning before it resolves run ungated (safe: full toolset), and Chrome mode
+  // starts restricting once it lands. Never blocks boot.
+  probeToolsets().catch(() => {})
   console.log(`[sara] connector started (paired=${isPaired()}, device=${DEVICE})`)
 }
 function stop() {
@@ -538,4 +614,9 @@ module.exports = {
   patchConfig: saveCreds, // MERGING write — never clobbers creds or watch
   getWatch, // the truth about recording
   onWatchChange, // …and a subscription to it
+  // Workspace → toolset gating (Whole Computer made real):
+  setToolsetMode, // the store pushes 'chrome'|'whole'|'pause' on a workspace change
+  isToolsetGatingAvailable, // did the boot probe confirm --toolsets works? (drives honest copy)
+  buildChatArgs, // pure — exported for tests
+  CHROME_TOOLSETS,
 }

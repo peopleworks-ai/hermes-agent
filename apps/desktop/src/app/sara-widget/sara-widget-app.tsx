@@ -127,7 +127,13 @@ export function SaraWidgetApp() {
             {WORKSPACES.map(mode => (
               <RadioRow
                 checked={state.workspace === mode}
-                hint={SARA_WORKSPACE_HINT[mode]}
+                hint={
+                  // Honesty: if the boot probe could not confirm --toolsets, Chrome mode does NOT
+                  // actually fence Sarä in — say so instead of promising a boundary that isn't real.
+                  mode === 'chrome' && !state.gated
+                    ? 'Prefers her own browser (restriction not enforced on this machine).'
+                    : SARA_WORKSPACE_HINT[mode]
+                }
                 key={mode}
                 label={SARA_WORKSPACE_LABEL[mode]}
                 onSelect={() => void setWorkspace(mode)}

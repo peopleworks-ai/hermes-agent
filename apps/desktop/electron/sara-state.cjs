@@ -94,9 +94,12 @@ function reduceWorkspace(state, mode, ctx = {}) {
     effects.push({ type: 'setPaused', value: false })
     if (mode === 'chrome') {
       effects.push({ type: 'chrome', action: 'launch' })
-      effects.push({ type: 'toast', message: ctx.gated === false ? POPUP.chrome : POPUP.chrome })
+      effects.push({ type: 'toast', message: POPUP.chrome })
     }
   }
+  // Tell the connector which toolset to spawn Hermes with — this is what makes the mode REAL rather
+  // than a label (Chrome → browser only; Whole Computer → everything).
+  effects.push({ type: 'toolset', mode: next.workspace })
   effects.push({ type: 'persist', patch: { workspace: next.workspace, learning: next.learning } })
   return { next, effects }
 }
@@ -192,7 +195,15 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
   let pollTimer = null
   let unsubWatch = null
 
-  const getState = () => ({ ...state, watch: { ...state.watch }, currentWork: state.currentWork.slice() })
+  // `gated` = is "Chrome restricts Sarä" a REAL boundary on this Hermes, or just a label? Read live
+  // from the connector's probe result so the widget can show honest copy either way. The probe is
+  // async and usually resolves within a second of boot, before the user opens the widget.
+  const getState = () => ({
+    ...state,
+    watch: { ...state.watch },
+    currentWork: state.currentWork.slice(),
+    gated: typeof connector.isToolsetGatingAvailable === 'function' ? connector.isToolsetGatingAvailable() : false
+  })
 
   function emit() {
     const snap = getState()
@@ -224,6 +235,7 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
         else if (e.type === 'stopWatch') await connector.stopWatch()
         else if (e.type === 'openWebApp') dialogs.openExternal(webAppUrl)
         else if (e.type === 'toast') dialogs.toast(e.message)
+        else if (e.type === 'toolset') connector.setToolsetMode && connector.setToolsetMode(e.mode)
         else if (e.type === 'persist') connector.patchConfig({ sara: e.patch })
       } catch (err) {
         // A failed startWatch leaves us ARMED but NOT RECORDING — which the connector reports over
@@ -306,6 +318,9 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     const watchNow = typeof connector.getWatch === 'function' ? connector.getWatch() : null
     const paired = typeof connector.isPaired === 'function' ? connector.isPaired() : false
     state = hydrate(state, { config, watchNow, paired })
+    // Push the hydrated workspace to the connector so the very first task spawns with the right
+    // toolset — otherwise Chrome mode wouldn't restrict anything until the user re-picked it.
+    if (typeof connector.setToolsetMode === 'function') connector.setToolsetMode(state.workspace)
     if (typeof connector.onWatchChange === 'function') {
       unsubWatch = connector.onWatchChange(syncRecording)
     }

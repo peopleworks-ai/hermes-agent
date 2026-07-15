@@ -6204,7 +6204,7 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
 // cancelled dialog resolves with the state unchanged and the renderer never has to guess — it never
 // shows an optimistic segment it then has to unwind. Live updates arrive by push
 // (hermes:sara:state), not polling; see broadcastSaraState.
-const SARA_DEFAULT_STATE = { workspace: 'chrome', learning: 'off', watch: { screen: false, voice: false }, recording: false, currentWork: [], paired: false }
+const SARA_DEFAULT_STATE = { workspace: 'chrome', learning: 'off', watch: { screen: false, voice: false }, recording: false, currentWork: [], paired: false, gated: false }
 
 ipcMain.handle('hermes:sara:get', async () => (saraStore ? saraStore.getState() : SARA_DEFAULT_STATE))
 
