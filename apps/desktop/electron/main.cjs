@@ -7721,6 +7721,23 @@ app.whenReady().then(() => {
     // Start the connector: pairing server (hcos "Connect" → here), no-key LLM sidecar, Hermes
     // auto-config, and the task-bridge poll. NOTE it also resumes a persisted watch — which is
     // precisely why the store hydrates from the same config, so the UI can't disagree with it.
+    // Pin the Hermes CLI so the connector never spawns a bare `hermes` that a PATH shim redirects to
+    // THIS app (which just boots, prints its banner, single-instance-exits — a "task" that ran
+    // nothing). Prefer the venv console-script in the install we manage; leave any explicit env alone.
+    try {
+      if (!process.env.HERMES_BIN) {
+        const updateRoot = resolveUpdateRoot()
+        const venvHermes = saraPath.join(
+          updateRoot,
+          'venv',
+          IS_WINDOWS ? 'Scripts' : 'bin',
+          IS_WINDOWS ? 'hermes.exe' : 'hermes'
+        )
+        if (fileExists(venvHermes)) process.env.HERMES_BIN = venvHermes
+      }
+    } catch (e) {
+      console.error('[sara] HERMES_BIN pin failed:', (e && e.message) || e)
+    }
     saraConn.start(app.getPath('userData'))
 
     // Chrome Sara (§5): the visible, persistent-login browser Hermes drives via CDP. LAZY — the

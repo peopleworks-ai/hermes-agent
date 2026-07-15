@@ -23,7 +23,20 @@ const LLM_PORT = Number(process.env.SARA_LLM_PORT || 8760)
 const PAIR_PORT = Number(process.env.SARA_PAIR_PORT || 8761)
 const DEVICE = os.hostname()
 const POLL_MS = 3000
-const HERMES = process.env.HERMES_BIN || 'hermes'
+// Resolved LAZILY at each spawn: main.cjs pins HERMES_BIN to the venv CLI, and it may do so after
+// this module is required — capturing it once at load time would freeze the wrong value ('hermes' on
+// PATH). On a packaged client, bare `hermes` can be a PATH shim that relaunches THIS Electron app.
+function hermesBin() {
+  return process.env.HERMES_BIN || 'hermes'
+}
+// Boot-banner phrases this app prints (main.cjs install-stamp, connector-started, tray-created). If a
+// spawned "hermes" emits ≥2 of these, HERMES resolved to the app itself: the 2nd instance hits the
+// single-instance lock, prints its banner, and exits 0 having run NOTHING. Never call that a result.
+const APP_BANNER_MARKERS = ['install stamp', 'connector started', 'tray created', 'tray icon']
+function looksLikeAppBanner(s) {
+  const t = String(s || '').toLowerCase()
+  return APP_BANNER_MARKERS.filter((m) => t.includes(m)).length >= 2
+}
 // Zombie safety-net only — Hermes itself has no timeout. Heavy multi-app tasks
 // (build a spreadsheet, drive Gmail in the browser, write+run a script) legit run
 // well past 10 min, so kill only after 30. Keep in sync with the server's
@@ -255,7 +268,7 @@ function ensureHermesConfig() {
   ]
   for (const [k, v] of settings) {
     try {
-      spawn(HERMES, ['config', 'set', k, v], { stdio: 'ignore' })
+      spawn(hermesBin(), ['config', 'set', k, v], { stdio: 'ignore' })
     } catch {
       /* best-effort */
     }
@@ -325,7 +338,7 @@ function probeToolsets() {
     }
     let child
     try {
-      child = spawn(HERMES, ['chat', '--list-toolsets'], { windowsHide: true })
+      child = spawn(hermesBin(), ['chat', '--list-toolsets'], { windowsHide: true })
     } catch {
       return finish(false)
     }
@@ -386,8 +399,9 @@ function runHermes(prompt, onProgress) {
     const scanOut = scanFactory()
     const scanErr = scanFactory()
     let child
+    const bin = hermesBin()
     try {
-      child = spawn(HERMES, hermesChatArgs(prompt), { windowsHide: true })
+      child = spawn(bin, hermesChatArgs(prompt), { windowsHide: true })
     } catch (e) {
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
     }
@@ -407,10 +421,20 @@ function runHermes(prompt, onProgress) {
     })
     child.on('error', (e) => {
       clearTimeout(t)
-      resolve({ error: `hermes not found (${HERMES}): ${(e && e.message) || e}` })
+      resolve({ error: `hermes not found (${bin}): ${(e && e.message) || e}` })
     })
     child.on('close', (code) => {
       clearTimeout(t)
+      // HERMES mis-resolved to THIS app (a PATH shim relaunched us): the 2nd instance printed its
+      // boot banner and single-instance-exited 0 without running anything. Fail loudly — a fake
+      // "success" here is exactly what let an empty task show a green ✓.
+      if (looksLikeAppBanner(out)) {
+        return resolve({
+          error:
+            `hermes resolved to the desktop app, not the CLI (bin=${bin}). No task ran — set ` +
+            `HERMES_BIN to the venv hermes and restart Sarä.`,
+        })
+      }
       if (code !== 0) resolve({ error: (err || out || `hermes exit ${code}`).slice(0, 2000) })
       else resolve({ result: extractAnswer(out) || '(no output)' })
     })
@@ -618,5 +642,6 @@ module.exports = {
   setToolsetMode, // the store pushes 'chrome'|'whole'|'pause' on a workspace change
   isToolsetGatingAvailable, // did the boot probe confirm --toolsets works? (drives honest copy)
   buildChatArgs, // pure — exported for tests
+  looksLikeAppBanner, // pure — guards against reporting the app's own boot banner as a task result
   CHROME_TOOLSETS,
 }
