@@ -23,6 +23,18 @@ const LLM_PORT = Number(process.env.SARA_LLM_PORT || 8760)
 const PAIR_PORT = Number(process.env.SARA_PAIR_PORT || 8761)
 const DEVICE = os.hostname()
 const POLL_MS = 3000
+
+// The build we're running, reported to hcos so it can tell the user when a newer one is out.
+// Without this the server only knows the version it PUBLISHED, so a stale install is
+// indistinguishable from a current one. Resolved lazily and defensively: `app` isn't ready at
+// module load, and this file is also require()d by plain-node unit tests where 'electron' throws.
+function appVersion() {
+  try {
+    return require('electron').app.getVersion() || ''
+  } catch {
+    return ''
+  }
+}
 // Resolved LAZILY at each spawn: main.cjs pins HERMES_BIN to the venv CLI, and it may do so after
 // this module is required — capturing it once at load time would freeze the wrong value ('hermes' on
 // PATH). On a packaged client, bare `hermes` can be a PATH shim that relaunches THIS Electron app.
@@ -218,7 +230,8 @@ function startPairing(onPaired) {
     if (req.method === 'GET') {
       cors()
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      return res.end(JSON.stringify({ app: 'sara-desktop', paired: isPaired() }))
+      // `version` lets the hcos page compare against the published build and offer an update.
+      return res.end(JSON.stringify({ app: 'sara-desktop', paired: isPaired(), version: appVersion() }))
     }
     let body = ''
     req.on('data', (c) => (body += c))
@@ -446,7 +459,8 @@ async function pollOnce() {
   if (claiming || state.paused || !isPaired()) return
   claiming = true
   try {
-    const task = await hcos(`${TASK_API}.claim_next_task`, { device: DEVICE })
+    // This poll doubles as the server-side heartbeat, so it's also where we report our version.
+    const task = await hcos(`${TASK_API}.claim_next_task`, { device: DEVICE, version: appVersion() })
     if (task && task.name) {
       const entry = { name: task.name, label: task.prompt || '(task)' }
       state.running.push(entry)
