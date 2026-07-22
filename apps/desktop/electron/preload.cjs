@@ -43,6 +43,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setWorkspace: mode => ipcRenderer.invoke('hermes:sara:setWorkspace', mode),
     setLearning: mode => ipcRenderer.invoke('hermes:sara:setLearning', mode),
     openWebApp: () => ipcRenderer.invoke('hermes:sara:openWebApp'),
+    // The /people/desktop setup page — the ONE place connection status lives. The widget never
+    // runs its own connect flow; when unpaired it sends the user here and the page auto-pairs.
+    openSetup: () => ipcRenderer.invoke('hermes:sara:openSetup'),
     quit: () => ipcRenderer.invoke('hermes:sara:quit'),
     // Live push from the store — the widget never polls.
     onState: callback => {

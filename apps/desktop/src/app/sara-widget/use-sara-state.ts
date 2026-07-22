@@ -50,9 +50,13 @@ export function useSaraState() {
     void window.hermesDesktop?.sara?.openWebApp()
   }, [])
 
+  const openSetup = useCallback(() => {
+    void window.hermesDesktop?.sara?.openSetup()
+  }, [])
+
   const quit = useCallback(() => {
     void window.hermesDesktop?.sara?.quit()
   }, [])
 
-  return { state, setWorkspace, setLearning, openWebApp, quit }
+  return { state, setWorkspace, setLearning, openWebApp, openSetup, quit }
 }

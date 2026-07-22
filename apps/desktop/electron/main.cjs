@@ -5723,6 +5723,10 @@ const sessionWindows = createSessionWindowRegistry()
 // The widget window is a SECOND view over sara-state (the tray is the first). Its own registry, not
 // a magic key in `sessionWindows`, so a chat session id can never collide with it.
 const SARA_WEB_APP_URL = 'https://hcos.peopleworks.ai/people/sarah'
+// The setup page is the ONE surface that owns connection status ("connected in two places is not
+// UX" — Sabrie). It probes our loopback pairing server and pairs this app automatically; the
+// widget/tray never run a connect flow of their own, they only send the user here.
+const SARA_SETUP_URL = 'https://hcos.peopleworks.ai/people/desktop'
 const saraWidgetWindows = createSessionWindowRegistry()
 let saraStore = null
 
@@ -6219,6 +6223,11 @@ ipcMain.handle('hermes:sara:setLearning', async (event, mode) => {
   if (!saraStore) return SARA_DEFAULT_STATE
   const parent = BrowserWindow.fromWebContents(event.sender)
   return saraStore.setLearning(mode, { parent })
+})
+
+ipcMain.handle('hermes:sara:openSetup', async () => {
+  require('./sara-dialogs.cjs').openExternal(SARA_SETUP_URL)
+  return { ok: true }
 })
 
 ipcMain.handle('hermes:sara:openWebApp', async () => {
@@ -7761,6 +7770,16 @@ app.whenReady().then(() => {
     saraStore.hydrateFromConnector() // ← adopts the connector's persisted watch as the truth
     saraStore.startCurrentWorkPoll(8000) // one poll now feeds BOTH surfaces
     saraStore.subscribe(broadcastSaraState) // widget window updates by push, never by polling
+
+    // First-run handoff: an UNPAIRED launch opens the setup page, which pairs this app by itself
+    // (it probes our loopback server and POSTs the token — no click, no keys). This is what makes
+    // "install → open → connected" true with the app never showing a connect flow of its own.
+    // Once per process run; a paired boot opens nothing. The pairing server is already listening
+    // (saraConn.start above), so the page's first probe finds us.
+    if (!saraConn.isPaired()) {
+      console.log('[sara] not paired — opening the setup page to auto-connect')
+      saraDialogs.openExternal(SARA_SETUP_URL)
+    }
 
     initSaraTray(app, {
       store: saraStore,

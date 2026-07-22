@@ -105,7 +105,7 @@ function StatusPill({ state }: { state: SaraWidgetState }) {
 }
 
 export function SaraWidgetApp() {
-  const { state, setWorkspace, setLearning, openWebApp, quit } = useSaraState()
+  const { state, setWorkspace, setLearning, openWebApp, openSetup, quit } = useSaraState()
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -122,6 +122,41 @@ export function SaraWidgetApp() {
       </header>
 
       <div className="flex-1 space-y-2.5 overflow-y-auto p-3">
+        {/* Status first, settings below: the first thing a first-run user sees must be what Sarä is
+            DOING, not a form. Connection itself lives on ONE surface — the /people/desktop page,
+            which pairs this app automatically — so the unpaired card only points there ("connected
+            in two places is not UX"). The radios underneath are optional preferences, and putting
+            them after the status card is what stops them reading as required setup steps. */}
+        <WidgetCard title="Current Work">
+          {!state.paired ? (
+            <div className="py-2 text-center">
+              <p className="text-xs font-medium text-foreground">Finishing setup…</p>
+              <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                Sarä connects automatically on the setup page that just opened in your browser —
+                nothing to choose here.
+              </p>
+              <button
+                className="mt-2 rounded-md border border-border px-2 py-1 text-[0.6875rem] font-medium hover:bg-accent"
+                onClick={openSetup}
+                type="button"
+              >
+                Open the setup page
+              </button>
+            </div>
+          ) : state.currentWork.length === 0 ? (
+            <p className="py-2 text-center text-[0.6875rem] text-muted-foreground">Nothing running</p>
+          ) : (
+            <ul className="space-y-1">
+              {state.currentWork.map((w, i) => (
+                <li className="flex items-start gap-2 text-xs" key={`${w.label}-${i}`}>
+                  <span className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+                  <span className="min-w-0 truncate text-foreground">{w.label}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </WidgetCard>
+
         <WidgetCard title="Sarä Workspace">
           <div className="space-y-0.5" role="radiogroup">
             {WORKSPACES.map(mode => (
@@ -166,34 +201,6 @@ export function SaraWidgetApp() {
           ) : null}
         </WidgetCard>
 
-        <WidgetCard title="Current Work">
-          {!state.paired ? (
-            <div className="py-2 text-center">
-              <p className="text-xs font-medium text-foreground">Not connected</p>
-              <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
-                Link this computer to your account from the web app.
-              </p>
-              <button
-                className="mt-2 rounded-md border border-border px-2 py-1 text-[0.6875rem] font-medium hover:bg-accent"
-                onClick={openWebApp}
-                type="button"
-              >
-                Connect this device
-              </button>
-            </div>
-          ) : state.currentWork.length === 0 ? (
-            <p className="py-2 text-center text-[0.6875rem] text-muted-foreground">Nothing running</p>
-          ) : (
-            <ul className="space-y-1">
-              {state.currentWork.map((w, i) => (
-                <li className="flex items-start gap-2 text-xs" key={`${w.label}-${i}`}>
-                  <span className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
-                  <span className="min-w-0 truncate text-foreground">{w.label}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </WidgetCard>
       </div>
 
       <footer className="flex items-center justify-between gap-2 border-t border-border p-2">

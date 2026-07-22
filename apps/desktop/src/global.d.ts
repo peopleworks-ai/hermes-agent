@@ -21,6 +21,8 @@ declare global {
         setWorkspace: (mode: SaraWorkspace) => Promise<SaraWidgetState>
         setLearning: (mode: SaraLearning) => Promise<SaraWidgetState>
         openWebApp: () => Promise<{ ok: boolean }>
+        /** Opens /people/desktop — the setup page that auto-pairs this app. */
+        openSetup: () => Promise<{ ok: boolean }>
         quit: () => Promise<{ ok: boolean }>
         /** Live push from the main-process store. Returns an unsubscribe. */
         onState: (callback: (state: SaraWidgetState) => void) => () => void
