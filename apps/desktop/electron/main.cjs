@@ -7683,9 +7683,12 @@ if (!_gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
-    else if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+    else if (app.isReady()) {
+      // The user double-clicked the desktop icon while the app was already running (tray-only, so
+      // nothing LOOKS running). Restoring the hidden chat window showed nothing; surface the
+      // widget — the app's actual face — instead. If we're still booting, skip: the launch path
+      // opens the widget anyway.
+      openSaraWidgetWindow()
     }
   })
 }
@@ -7787,6 +7790,12 @@ app.whenReady().then(() => {
       onOpenWidget: () => openSaraWidgetWindow(),
       onOpenWebApp: () => saraDialogs.openExternal(SARA_WEB_APP_URL),
     })
+
+    // Launching the app must produce an INTERFACE. Tray-only hides the Hermes chat window by
+    // design, which left a desktop-icon double-click showing nothing at all — the app "started"
+    // into an invisible tray icon. The compact widget is the app's face: show it on every launch.
+    // (There is no autostart, so a launch is always a deliberate click.)
+    openSaraWidgetWindow()
   } catch (e) {
     console.error('[sara] widget init failed:', (e && e.message) || e)
   }
@@ -7796,14 +7805,13 @@ app.whenReady().then(() => {
   if (_coldStartLink) handleDeepLink(_coldStartLink)
 
   app.on('activate', () => {
-    // Recreate the primary window if it's gone. Guard on mainWindow directly
-    // (not just total window count) so a dock click still restores the main
-    // window when only secondary session windows remain open.
+    // Recreate the primary window if it's gone — it boots the backend and (tray-only) stays
+    // hidden. Do NOT focusWindow(mainWindow) here: that would un-hide the deliberately-hidden
+    // Hermes chat window. A dock click surfaces the widget — the app's actual face.
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
-    } else {
-      focusWindow(mainWindow)
     }
+    openSaraWidgetWindow()
   })
 })
 
