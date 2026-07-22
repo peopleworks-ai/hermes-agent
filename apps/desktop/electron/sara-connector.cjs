@@ -254,6 +254,10 @@ function startPairing(onPaired) {
       res.setHeader('Access-Control-Allow-Origin', '*')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
       res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+      // Chrome's Private Network Access: a public https page calling 127.0.0.1 sends a
+      // preflight demanding this header; without it, newer/policy-managed Chromes block the
+      // pairing call outright — the exact "Connect does nothing, app looks fine" failure.
+      res.setHeader('Access-Control-Allow-Private-Network', 'true')
     }
     if (req.method === 'OPTIONS') {
       cors()
