@@ -18,6 +18,10 @@ export interface SaraWidgetState {
   recording: boolean
   currentWork: { label: string }[]
   paired: boolean
+  /** WHOSE account this app is paired to ("Connected as ..."); '' until known. */
+  account: string
+  /** Connector truth: the stored token exists but the server rejects it (401). */
+  authBad: boolean
   /**
    * Is "Chrome restricts Sarä to her browser" a REAL boundary on this machine, or just a label?
    * True only when the boot probe confirmed the installed Hermes understands --toolsets. When
@@ -34,6 +38,8 @@ export const SARA_DEFAULT_STATE: SaraWidgetState = {
   recording: false,
   currentWork: [],
   paired: false,
+  account: '',
+  authBad: false,
   gated: false
 }
 

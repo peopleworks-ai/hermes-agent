@@ -364,3 +364,28 @@ test('store: Ask while watching actually stops the recorder (end-to-end)', async
   assert.equal(store.getState().recording, false, 'and the UI must say so')
   assert.equal(store.getState().learning, 'ask')
 })
+
+// ── identity: "Connected as …" + the expired-token truth ────────────────────
+test('hydrate adopts the persisted pairing identity (config.user) as account', () => {
+  const s = hydrate(DEFAULT_STATE, { config: { user: 'a@b.com' }, paired: true })
+  assert.equal(s.account, 'a@b.com')
+  assert.equal(s.authBad, false, 'authBad is live connector truth — never restored from disk')
+})
+
+test('store: setIdentity mirrors the connector and notifies views; no-op when unchanged', () => {
+  const { connector, chrome, dialogs } = makeFakes({})
+  const store = createSaraStore({ connector, chrome, dialogs })
+  let notified = 0
+  store.subscribe(() => (notified += 1))
+
+  store.setIdentity({ user: 'a@b.com', authBad: false })
+  assert.equal(store.getState().account, 'a@b.com')
+  assert.equal(notified, 1)
+
+  store.setIdentity({ user: 'a@b.com', authBad: false })
+  assert.equal(notified, 1, 'identical identity must not re-emit')
+
+  store.setIdentity({ user: 'a@b.com', authBad: true })
+  assert.equal(store.getState().authBad, true, 'a 401 must surface, not hide behind "Connected"')
+  assert.equal(notified, 2)
+})

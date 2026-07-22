@@ -63,6 +63,13 @@ const state = {
   secret: process.env.HROS_API_SECRET || '',
   running: [], // [{ name, label }] — the tray's "Current Work"
   paused: false,
+  // WHOSE account this app records into ("Connected as …"). From the pairing payload, or
+  // backfilled by whoami() for installs paired before the field existed.
+  userEmail: '',
+  // Token-validity truth. "paired" only means creds EXIST; when the account's secret is
+  // re-generated elsewhere, every call 401s while both surfaces still say Connected — that
+  // exact incident is why this flag exists. Set on any 401, cleared on any authed success.
+  authBad: false,
 }
 let userDataDir = null
 let pollTimer = null
@@ -81,6 +88,7 @@ function loadCreds() {
       state.base = (c.base_url || state.base).replace(/\/+$/, '')
       state.key = c.api_key
       state.secret = c.api_secret
+      if (typeof c.user === 'string') state.userEmail = c.user
       return true
     }
   } catch {
@@ -119,6 +127,31 @@ async function hcos(method, payload) {
   const j = await r.json().catch(() => ({}))
   if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status, body: j })
   return j && j.message !== undefined ? j.message : j
+}
+
+// Who does this token belong to? Backfills `userEmail` for installs paired before the pairing
+// payload carried `user`, and doubles as a token-validity probe at boot. Best-effort: a network
+// blip must not flag a working pairing as bad, so ONLY a 401 sets authBad here.
+async function whoami() {
+  if (!isPaired()) return
+  try {
+    const u = await hcos('frappe.auth.get_logged_user', {})
+    if (u && typeof u === 'string') {
+      if (u !== state.userEmail) {
+        state.userEmail = u
+        saveCreds({ user: u })
+      }
+    }
+    state.authBad = false
+  } catch (e) {
+    if (e && e.status === 401) state.authBad = true
+  }
+}
+
+// The UI's line "Connected as …" / "Connection expired". `user` may be '' on pre-field pairings
+// until whoami() lands; authBad flips live from the poll (401 ⇒ true, any success ⇒ false).
+function getIdentity() {
+  return { user: state.userEmail || '', authBad: !!state.authBad }
 }
 
 // ── (2) LLM sidecar: Hermes → here → hcos llm_proxy → MiniMax ────────────
@@ -243,8 +276,16 @@ function startPairing(onPaired) {
           state.base = (c.base_url || state.base).replace(/\/+$/, '')
           state.key = c.api_key
           state.secret = c.api_secret
-          saveCreds({ base_url: state.base, api_key: c.api_key, api_secret: c.api_secret })
-          console.log('[sara] paired ✓')
+          if (typeof c.user === 'string' && c.user) state.userEmail = c.user
+          state.authBad = false // fresh creds — assume good until a call says otherwise
+          saveCreds({
+            base_url: state.base,
+            api_key: c.api_key,
+            api_secret: c.api_secret,
+            ...(state.userEmail ? { user: state.userEmail } : {}),
+          })
+          console.log(`[sara] paired ✓${state.userEmail ? ' as ' + state.userEmail : ''}`)
+          whoami() // verify + backfill the account for payloads without `user`
           if (onPaired) onPaired()
         }
       } catch {
@@ -461,6 +502,7 @@ async function pollOnce() {
   try {
     // This poll doubles as the server-side heartbeat, so it's also where we report our version.
     const task = await hcos(`${TASK_API}.claim_next_task`, { device: DEVICE, version: appVersion() })
+    state.authBad = false // an authed round-trip is live proof the token still works
     if (task && task.name) {
       const entry = { name: task.name, label: task.prompt || '(task)' }
       state.running.push(entry)
@@ -478,8 +520,10 @@ async function pollOnce() {
       console.log(`[sara] done ${task.name}: ${error ? 'ERROR ' + error : String(result).slice(0, 100)}`)
     }
   } catch (e) {
-    if (e.status === 401) console.error('[sara] 401 — re-pair at /people/desktop')
-    else console.error('[sara] poll error:', (e && e.message) || e)
+    if (e.status === 401) {
+      state.authBad = true // surfaces as "Connection expired" in the widget + tray
+      console.error('[sara] 401 — re-pair at /people/desktop')
+    } else console.error('[sara] poll error:', (e && e.message) || e)
   } finally {
     claiming = false
   }
@@ -611,6 +655,7 @@ function resumeWatchIfEnabled() {
 function start(dir, onPaired) {
   userDataDir = dir
   loadCreds()
+  whoami() // async: backfill "Connected as …" + boot-time token check; never blocks start
   startSidecar()
   startPairing(onPaired)
   ensureHermesConfig()
@@ -650,6 +695,7 @@ module.exports = {
   // Additive — so sara-state.cjs can be the ONE owner of widget state without a second store:
   readConfig, // the persisted sara-config.json (creds + watch + our own {sara:{…}} block)
   patchConfig: saveCreds, // MERGING write — never clobbers creds or watch
+  getIdentity, // {user, authBad} — "Connected as …" / "Connection expired" for the UI
   getWatch, // the truth about recording
   onWatchChange, // …and a subscription to it
   // Workspace → toolset gating (Whole Computer made real):

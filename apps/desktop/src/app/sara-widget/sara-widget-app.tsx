@@ -128,7 +128,27 @@ export function SaraWidgetApp() {
             in two places is not UX"). The radios underneath are optional preferences, and putting
             them after the status card is what stops them reading as required setup steps. */}
         <WidgetCard title="Current Work">
-          {!state.paired ? (
+          {state.authBad ? (
+            /* Creds exist but the server rejects them — the account's token was re-generated
+               elsewhere. Without this card the app LOOKS connected while every call fails
+               silently (the exact incident behind "Watch armed — not recording"). */
+            <div className="py-2 text-center">
+              <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                Connection expired
+              </p>
+              <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                Sarä can’t reach {state.account ? <b>{state.account}</b> : 'your account'} any more —
+                tasks and recording are not running.
+              </p>
+              <button
+                className="mt-2 rounded-md border border-border px-2 py-1 text-[0.6875rem] font-medium hover:bg-accent"
+                onClick={openSetup}
+                type="button"
+              >
+                Open the setup page to Re-connect
+              </button>
+            </div>
+          ) : !state.paired ? (
             <div className="py-2 text-center">
               <p className="text-xs font-medium text-foreground">Finishing setup…</p>
               <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
@@ -143,17 +163,29 @@ export function SaraWidgetApp() {
                 Open the setup page
               </button>
             </div>
-          ) : state.currentWork.length === 0 ? (
-            <p className="py-2 text-center text-[0.6875rem] text-muted-foreground">Nothing running</p>
           ) : (
-            <ul className="space-y-1">
-              {state.currentWork.map((w, i) => (
-                <li className="flex items-start gap-2 text-xs" key={`${w.label}-${i}`}>
-                  <span className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
-                  <span className="min-w-0 truncate text-foreground">{w.label}</span>
-                </li>
-              ))}
-            </ul>
+            <>
+              {state.currentWork.length === 0 ? (
+                <p className="py-2 text-center text-[0.6875rem] text-muted-foreground">
+                  Nothing running
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {state.currentWork.map((w, i) => (
+                    <li className="flex items-start gap-2 text-xs" key={`${w.label}-${i}`}>
+                      <span className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+                      <span className="min-w-0 truncate text-foreground">{w.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {state.account ? (
+                /* Work and recordings land in THIS account — load-bearing on shared computers. */
+                <p className="mt-1.5 truncate text-center text-[0.625rem] text-muted-foreground">
+                  Connected as <b>{state.account}</b>
+                </p>
+              ) : null}
+            </>
           )}
         </WidgetCard>
 
@@ -190,6 +222,14 @@ export function SaraWidgetApp() {
               />
             ))}
           </div>
+          {state.learning === 'watch' ? (
+            /* On a shared computer the recording follows the PAIRING, not the person at the
+               keyboard — say whose account it lands in right where watching is switched on. */
+            <p className="mt-1.5 text-[0.625rem] leading-snug text-muted-foreground">
+              Everything on this screen is recorded into{' '}
+              {state.account ? <b>{state.account}</b> : 'the connected account'}’s Screen Activity.
+            </p>
+          ) : null}
           {state.recording ? (
             <button
               className="mt-2 w-full rounded-md border border-red-500/40 bg-red-500/10 px-2 py-1 text-[0.6875rem] font-semibold text-red-600 hover:bg-red-500/20 dark:text-red-400"

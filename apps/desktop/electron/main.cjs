@@ -7789,6 +7789,7 @@ app.whenReady().then(() => {
       iconPath: saraPath.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
       onOpenWidget: () => openSaraWidgetWindow(),
       onOpenWebApp: () => saraDialogs.openExternal(SARA_WEB_APP_URL),
+      onOpenSetup: () => saraDialogs.openExternal(SARA_SETUP_URL),
     })
 
     // Launching the app must produce an INTERFACE. Tray-only hides the Hermes chat window by

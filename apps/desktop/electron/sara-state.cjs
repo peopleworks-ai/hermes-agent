@@ -41,6 +41,8 @@ const DEFAULT_STATE = Object.freeze({
   recording: false, // connector truth — the UI mirrors it, never sets it
   currentWork: [],
   paired: false,
+  account: '', // WHOSE account this app is paired to ("Connected as …"); '' until known
+  authBad: false, // connector truth: token exists but the server rejects it (401)
 })
 
 const NO_WATCH = { screen: false, voice: false }
@@ -175,7 +177,11 @@ function hydrate(state, { config = {}, watchNow = null, paired = false } = {}) {
   // doing right now, which at boot is "nothing yet" (the resume is async and may still fail).
   const recording = !!(watchNow && watchNow.enabled)
 
-  return { ...state, workspace, learning, watch, recording, paired: !!paired }
+  // The persisted pairing identity ("Connected as …"). authBad is deliberately NOT restored — it
+  // is live connector truth, and the first poll re-derives it.
+  const account = typeof config.user === 'string' ? config.user : ''
+
+  return { ...state, workspace, learning, watch, recording, paired: !!paired, account }
 }
 
 // ── the store ───────────────────────────────────────────────────────────────
@@ -312,6 +318,15 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     emit()
   }
 
+  // Mirrored from connector.getIdentity() — like `recording`, the UI renders it, never asserts it.
+  function setIdentity(id) {
+    const account = (id && typeof id.user === 'string' && id.user) || ''
+    const authBad = !!(id && id.authBad)
+    if (account === state.account && authBad === state.authBad) return
+    state = { ...state, account, authBad }
+    emit()
+  }
+
   /** Read the connector's persisted config + live watch, and adopt them as the truth. */
   function hydrateFromConnector() {
     const config = typeof connector.readConfig === 'function' ? connector.readConfig() : {}
@@ -336,6 +351,7 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
         const items = await connector.getCurrentWork()
         setCurrentWork(items)
         setPaired(connector.isPaired())
+        if (typeof connector.getIdentity === 'function') setIdentity(connector.getIdentity())
       } catch {
         /* keep the last known list rather than blanking it on a transient error */
       }
@@ -364,6 +380,7 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     setLearning,
     setCurrentWork,
     setPaired,
+    setIdentity,
     syncRecording,
     hydrateFromConnector,
     startCurrentWorkPoll,

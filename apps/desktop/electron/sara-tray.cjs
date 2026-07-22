@@ -45,7 +45,7 @@ function loadTrayIcon(iconPath) {
 }
 
 function initSaraTray(app, opts = {}) {
-  const { store, iconPath, onOpenWidget = null, onOpenWebApp = null } = opts
+  const { store, iconPath, onOpenWidget = null, onOpenWebApp = null, onOpenSetup = null } = opts
   if (!store) throw new Error('initSaraTray: a sara-state store is required')
 
   const img = loadTrayIcon(iconPath)
@@ -80,8 +80,19 @@ function initSaraTray(app, opts = {}) {
       template.push({ label: 'Open Sarä Widget', click: () => onOpenWidget() })
       template.push({ type: 'separator' })
     }
+    // Identity + token truth. "Connected as" says WHOSE account work and recordings land in
+    // (load-bearing on shared computers); the expired line is clickable and opens the setup page,
+    // because a silently-401ing app otherwise looks identical to a healthy one.
+    const identityLine = []
+    if (s.authBad) {
+      identityLine.push({ label: '⚠ Connection expired — Re-connect', click: () => onOpenSetup && onOpenSetup() })
+    } else if (s.account) {
+      identityLine.push({ label: `   Connected as ${s.account}`, enabled: false })
+    }
+
     template.push(
       { label: '● Sarä', enabled: false },
+      ...identityLine,
       { type: 'separator' },
       { label: 'SARA WORKSPACE', enabled: false },
       radio(WORKSPACE.pause, s.workspace === 'pause', () => store.setWorkspace('pause')),
