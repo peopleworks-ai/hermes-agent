@@ -121,6 +121,19 @@ test('an old stamp without `repo` still resolves (runner falls back to the fork 
   assert.equal(seen[0].repo, undefined)
 })
 
+test('the "No inference provider" refusal is detected (never a task result)', () => {
+  const { looksLikeNoProvider } = saraConn
+  // The real 2026-07-28 output shape: echoed prompt + refusal + clean exit.
+  const real =
+    '1. Buka https://peopleworks.myherdhr.com/#/dashboard. ...\n' +
+    "No inference provider configured. Run 'hermes model' to choose a provider and\n" +
+    'model, or set an API key (OPENROUTER_API_KEY, OPENAI_API_KEY, etc.) in\n' +
+    '~/.hermes/.env.\nGoodbye! ⚕'
+  assert.equal(looksLikeNoProvider(real), true)
+  assert.equal(looksLikeNoProvider('Done. Checked 14 staff, 2 missing clock-ins.'), false)
+  assert.equal(looksLikeNoProvider(''), false)
+})
+
 test('the store mirrors engineBroken/repairing from getIdentity and exposes repairProgress', () => {
   const identity = { user: 'x@y.z', authBad: false, engineBroken: true, engineDetail: 'missing', repairing: false }
   const store = createSaraStore({

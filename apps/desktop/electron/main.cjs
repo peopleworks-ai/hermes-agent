@@ -1158,6 +1158,18 @@ function broadcastBootstrapEvent(ev) {
     bootstrapState.completedAt = Date.now()
     bootstrapState.error = null
     bootstrapState.unsupportedPlatform = null
+    // The venv (and its hermes CLI) may have JUST appeared — the boot-time
+    // ensureHermesConfig() was skipped while no CLI existed, and without this
+    // re-run the first task executes an engine with NO inference provider and
+    // "succeeds" having done nothing (2026-07-28 fake-Done incident). Re-point
+    // the fresh CLI at the sidecar and re-probe; both are idempotent.
+    try {
+      const saraConn = require('./sara-connector.cjs')
+      saraConn.ensureHermesConfig()
+      saraConn.probeToolsets().catch(() => {})
+    } catch {
+      void 0
+    }
   } else if (ev.type === 'failed') {
     bootstrapState.active = false
     bootstrapState.error = ev.error || 'unknown error'
@@ -7850,7 +7862,13 @@ app.whenReady().then(() => {
         try {
           if (!saraConn.isPaired()) return // unpaired first-run: the normal boot flow installs
           if (!saraConn.getIdentity().engineBroken) return // resolved itself (late bootstrap)
-          runSaraEngineRepair('auto').catch((e) => console.error('[sara] auto-repair:', (e && e.message) || e))
+          runSaraEngineRepair('auto')
+            .then((r) => {
+              // "busy" = a first-launch install was already running — that's not an
+              // attempt. Re-arm so a later engine-broken transition can trigger again.
+              if (r && r.busy) saraEngineAutoRepairTried = false
+            })
+            .catch((e) => console.error('[sara] auto-repair:', (e && e.message) || e))
         } catch (e) {
           console.error('[sara] auto-repair trigger failed:', (e && e.message) || e)
         }

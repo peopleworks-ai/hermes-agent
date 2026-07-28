@@ -88,6 +88,13 @@ function looksLikeAppBanner(s) {
   const t = String(s || '').toLowerCase()
   return APP_BANNER_MARKERS.filter((m) => t.includes(m)).length >= 2
 }
+// A zero-work "success" (2026-07-28 field incident): a freshly bootstrapped hermes ran
+// with NO inference provider — boot-time ensureHermesConfig() was skipped while the venv
+// didn't exist yet — echoed the prompt, printed this refusal, and exited 0. The task
+// showed a green ✓ having done NOTHING. Never report that output as a result.
+function looksLikeNoProvider(s) {
+  return /no inference provider configured/i.test(String(s || ''))
+}
 // Zombie safety-net only — Hermes itself has no timeout. Heavy multi-app tasks
 // (build a spreadsheet, drive Gmail in the browser, write+run a script) legit run
 // well past 10 min, so kill only after 30. Keep in sync with the server's
@@ -573,6 +580,19 @@ function runHermes(prompt, onProgress) {
             `No task ran — Sarä Desktop needs its engine repaired.`,
         })
       }
+      if (looksLikeNoProvider(out + err)) {
+        // Self-heal for the NEXT attempt (the CLI exists — it just was never pointed at
+        // the sidecar), and fail THIS one honestly. Token in lockstep with the server's
+        // _humanize_desktop_error, which tells the user to restart + Retry in Malay.
+        try {
+          ensureHermesConfig()
+        } catch {}
+        return resolve({
+          error:
+            'SARA_ENGINE_UNCONFIGURED: hermes ran with no inference provider — no work ' +
+            'was performed. Configuration re-applied; retry the task.',
+        })
+      }
       if (code !== 0) resolve({ error: (err || out || `hermes exit ${code}`).slice(0, 2000) })
       else {
         clearEngineBroken() // a real run completed — the engine works
@@ -801,5 +821,6 @@ module.exports = {
   isToolsetGatingAvailable, // did the boot probe confirm --toolsets works? (drives honest copy)
   buildChatArgs, // pure — exported for tests
   looksLikeAppBanner, // pure — guards against reporting the app's own boot banner as a task result
+  looksLikeNoProvider, // pure — guards against the "no inference provider" zero-work success
   CHROME_TOOLSETS,
 }
