@@ -28,6 +28,14 @@ export interface SaraWidgetState {
    * false, the Chrome-mode copy says so rather than pretending.
    */
   gated: boolean
+  /** Connector truth: the Hermes CLI is missing on this machine — tasks CANNOT run. */
+  engineBroken: boolean
+  /** 'missing' | 'app-shim' — why the engine is considered broken. */
+  engineDetail: string
+  /** The engine installer is running right now (task-claiming is paused meanwhile). */
+  repairing: boolean
+  /** One-line live progress from the installer, for the repair card. */
+  repairProgress: string
 }
 
 /** Used until the first IPC round-trip lands — and when the surface is opened in a plain browser. */
@@ -40,7 +48,11 @@ export const SARA_DEFAULT_STATE: SaraWidgetState = {
   paired: false,
   account: '',
   authBad: false,
-  gated: false
+  gated: false,
+  engineBroken: false,
+  engineDetail: '',
+  repairing: false,
+  repairProgress: ''
 }
 
 // Mirrors electron/sara-copy.cjs. Kept short here — the long consent text lives in the dialogs the

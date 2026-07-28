@@ -104,12 +104,19 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(commit, destPath) {
+// The repo the stamped commit is fetchable from when the stamp predates the
+// `repo` field. Keep in sync with DEFAULT_REPO in scripts/write-build-stamp.cjs.
+// NEVER hardcode the upstream org here: fork CI SHAs don't exist on
+// NousResearch, so the old hardcode 404'd on every packaged client and no
+// client ever successfully self-bootstrapped.
+const DEFAULT_REPO = 'peopleworks-ai/hermes-agent'
+
+function downloadInstallScript(commit, destPath, repo) {
   // Fetch from GitHub raw at the pinned commit. The raw URL with a SHA
   // is immutable (unlike a branch ref), so we don't need integrity
   // verification beyond "did the file we wrote pass a syntax probe."
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${commit}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/${repo || DEFAULT_REPO}/${commit}/scripts/${scriptName}`
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
     const tmpPath = destPath + '.tmp'
@@ -220,7 +227,7 @@ async function resolveInstallScript({
     line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
   })
   try {
-    await _download(installStamp.commit, cached)
+    await _download(installStamp.commit, cached, installStamp.repo)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
     return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
   } catch (err) {

@@ -58,5 +58,11 @@ export function useSaraState() {
     void window.hermesDesktop?.sara?.quit()
   }, [])
 
-  return { state, setWorkspace, setLearning, openWebApp, openSetup, quit }
+  const repairEngine = useCallback(() => {
+    // Fire-and-forget: progress + outcome arrive as state pushes (repairing/repairProgress),
+    // so the button needs no local busy state that could disagree with the truth.
+    void window.hermesDesktop?.sara?.repairEngine()
+  }, [])
+
+  return { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, quit }
 }

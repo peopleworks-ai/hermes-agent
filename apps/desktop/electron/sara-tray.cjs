@@ -45,7 +45,7 @@ function loadTrayIcon(iconPath) {
 }
 
 function initSaraTray(app, opts = {}) {
-  const { store, iconPath, onOpenWidget = null, onOpenWebApp = null, onOpenSetup = null } = opts
+  const { store, iconPath, onOpenWidget = null, onOpenWebApp = null, onOpenSetup = null, onRepairEngine = null } = opts
   if (!store) throw new Error('initSaraTray: a sara-state store is required')
 
   const img = loadTrayIcon(iconPath)
@@ -88,6 +88,13 @@ function initSaraTray(app, opts = {}) {
       identityLine.push({ label: '⚠ Connection expired — Re-connect', click: () => onOpenSetup && onOpenSetup() })
     } else if (s.account) {
       identityLine.push({ label: `   Connected as ${s.account}`, enabled: false })
+    }
+    // Engine truth, same contract as the expired line: a machine where every task
+    // would fail must not look identical to a healthy idle one.
+    if (s.repairing) {
+      identityLine.push({ label: '⏳ Memasang enjin Sarä…', enabled: false })
+    } else if (s.engineBroken) {
+      identityLine.push({ label: '⚠ Baiki enjin Sarä', click: () => onRepairEngine && onRepairEngine() })
     }
 
     template.push(

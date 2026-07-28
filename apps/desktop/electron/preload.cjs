@@ -46,6 +46,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // The /people/desktop setup page — the ONE place connection status lives. The widget never
     // runs its own connect flow; when unpaired it sends the user here and the page auto-pairs.
     openSetup: () => ipcRenderer.invoke('hermes:sara:openSetup'),
+    // Re-run the Hermes engine installer (marker + latch clear + startHermes + re-probe).
+    // The widget's "Baiki enjin Sarä" button; auto-repair uses the same path in main.
+    repairEngine: () => ipcRenderer.invoke('hermes:sara:repairEngine'),
     quit: () => ipcRenderer.invoke('hermes:sara:quit'),
     // Live push from the store — the widget never polls.
     onState: callback => {

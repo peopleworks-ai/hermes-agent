@@ -12,8 +12,11 @@
  * testable without booting Electron (main.cjs requires('electron') at load).
  */
 
-const OFFICIAL_REPO_HTTPS_URL = 'https://github.com/NousResearch/hermes-agent.git'
-const OFFICIAL_REPO_CANONICAL = 'github.com/nousresearch/hermes-agent'
+// "Official" = the Sara fork: client checkouts clone from it (install.ps1
+// $RepoUrlHttps) and desktop stamps pin its CI SHAs — passive update checks
+// against upstream NousResearch would compare the wrong history.
+const OFFICIAL_REPO_HTTPS_URL = 'https://github.com/peopleworks-ai/hermes-agent.git'
+const OFFICIAL_REPO_CANONICAL = 'github.com/peopleworks-ai/hermes-agent'
 
 // Normalize common GitHub remote URL forms to `host/owner/repo` (lowercased,
 // no trailing slash, no .git suffix) so SSH and HTTPS forms of the same repo

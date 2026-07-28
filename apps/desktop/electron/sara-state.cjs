@@ -43,6 +43,10 @@ const DEFAULT_STATE = Object.freeze({
   paired: false,
   account: '', // WHOSE account this app is paired to ("Connected as …"); '' until known
   authBad: false, // connector truth: token exists but the server rejects it (401)
+  engineBroken: false, // connector truth: the Hermes CLI is missing — tasks cannot run
+  engineDetail: '', // 'missing' | 'app-shim'
+  repairing: false, // connector truth: the engine installer is running (claims paused)
+  repairProgress: '', // one-line installer progress from main.cjs, for the widget card
 })
 
 const NO_WATCH = { screen: false, voice: false }
@@ -322,8 +326,27 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
   function setIdentity(id) {
     const account = (id && typeof id.user === 'string' && id.user) || ''
     const authBad = !!(id && id.authBad)
-    if (account === state.account && authBad === state.authBad) return
-    state = { ...state, account, authBad }
+    const engineBroken = !!(id && id.engineBroken)
+    const engineDetail = (id && id.engineDetail) || ''
+    const repairing = !!(id && id.repairing)
+    if (
+      account === state.account &&
+      authBad === state.authBad &&
+      engineBroken === state.engineBroken &&
+      engineDetail === state.engineDetail &&
+      repairing === state.repairing
+    )
+      return
+    state = { ...state, account, authBad, engineBroken, engineDetail, repairing }
+    emit()
+  }
+
+  // One-line progress from the engine installer (main.cjs forwards bootstrap events),
+  // so the widget's repair card can narrate "Memasang enjin Sarä… <stage>" live.
+  function setRepairProgress(text) {
+    const repairProgress = String(text || '')
+    if (repairProgress === state.repairProgress) return
+    state = { ...state, repairProgress }
     emit()
   }
 
@@ -381,6 +404,7 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     setCurrentWork,
     setPaired,
     setIdentity,
+    setRepairProgress,
     syncRecording,
     hydrateFromConnector,
     startCurrentWorkPoll,

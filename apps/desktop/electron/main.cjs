@@ -1171,11 +1171,31 @@ function broadcastBootstrapEvent(ev) {
     }
   }
 
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  const { webContents } = mainWindow
-  if (!webContents || webContents.isDestroyed()) return
-  webContents.send('hermes:bootstrap:event', ev)
+  // ALL windows, exactly like broadcastSaraState: under SARA_TRAY_ONLY the main window is
+  // never shown, so mainWindow-only delivery made every install failure invisible — the
+  // widget is where a human can actually see install/repair progress.
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    const wc = win.webContents
+    if (!wc || wc.isDestroyed()) continue
+    try {
+      wc.send('hermes:bootstrap:event', ev)
+    } catch {
+      /* a closing window is not an error */
+    }
+  }
+  // …and into the Sarä store, so the widget's repair card narrates the installer live.
+  if (saraBootstrapListener) {
+    try {
+      saraBootstrapListener(ev)
+    } catch {
+      void 0
+    }
+  }
 }
+
+// Set by the Sarä init block once the store exists; broadcastBootstrapEvent feeds it.
+let saraBootstrapListener = null
 
 function getBootstrapState() {
   return bootstrapState
@@ -6248,6 +6268,64 @@ ipcMain.handle('hermes:sara:quit', async () => {
   return { ok: true }
 })
 
+// ── Sarä engine repair ──────────────────────────────────────────────────────
+// The Hermes CLI venv is installed by the first-launch bootstrap; when it is missing
+// (blocked/failed install, deleted venv) every task fails with SARA_ENGINE_MISSING.
+// This composite flow is the ONE repair path for the widget button, the tray item,
+// and the auto-repair trigger: clear the bootstrap marker + latched failures (the
+// hermes:bootstrap:repair body), then actually re-run the installer via startHermes()
+// — the tray-only app has no renderer reload to drive it, which is why the plain
+// bootstrap:repair IPC was a no-op for Sarä clients — and finally re-point + re-probe
+// the fresh CLI.
+let saraEngineRepairInFlight = false
+let saraEngineAutoRepairTried = false
+async function runSaraEngineRepair(trigger) {
+  const saraConn = require('./sara-connector.cjs')
+  if (saraEngineRepairInFlight || bootstrapState.active) return { ok: false, busy: true }
+  saraEngineRepairInFlight = true
+  rememberLog(`[sara] engine repair started (${trigger})`)
+  try {
+    saraConn.setRepairing(true) // pause task-claiming — tasks wait Queued, not fail mid-install
+    if (saraStore) saraStore.setRepairProgress('Menyediakan pemasang…')
+    try {
+      if (fileExists(BOOTSTRAP_COMPLETE_MARKER)) fs.rmSync(BOOTSTRAP_COMPLETE_MARKER, { force: true })
+    } catch (error) {
+      rememberLog(`[sara] repair: failed to remove marker: ${error.message}`)
+    }
+    bootstrapFailure = null
+    backendStartFailure = null
+    resetHermesConnection()
+    try {
+      await startHermes()
+    } catch (error) {
+      rememberLog(`[sara] repair: startHermes failed: ${(error && error.message) || error}`)
+    }
+    // Success = the per-spawn resolver can now see a working CLI. Re-point it at the
+    // sidecar and re-probe gating; the probe itself clears (or re-latches) engineBroken.
+    try {
+      saraConn.ensureHermesConfig()
+      await saraConn.probeToolsets()
+    } catch {
+      void 0
+    }
+    const healthy = !saraConn.getIdentity().engineBroken
+    rememberLog(`[sara] engine repair ${healthy ? 'SUCCEEDED' : 'FAILED'} (${trigger})`)
+    if (saraStore) {
+      saraStore.setRepairProgress(healthy ? '' : 'Pemasangan gagal — cuba butang Baiki sekali lagi, atau hubungi support.')
+    }
+    return { ok: healthy }
+  } finally {
+    try {
+      require('./sara-connector.cjs').setRepairing(false)
+    } catch {
+      void 0
+    }
+    saraEngineRepairInFlight = false
+  }
+}
+
+ipcMain.handle('hermes:sara:repairEngine', async () => runSaraEngineRepair('widget'))
+
 // --- Pet overlay (pop-out mascot) -----------------------------------------
 // `request` is `{ bounds, screen }`. A fresh pop-out passes viewport-space
 // bounds (screen=false): convert to screen space by adding the main window's
@@ -7733,23 +7811,52 @@ app.whenReady().then(() => {
     // Start the connector: pairing server (hcos "Connect" → here), no-key LLM sidecar, Hermes
     // auto-config, and the task-bridge poll. NOTE it also resumes a persisted watch — which is
     // precisely why the store hydrates from the same config, so the UI can't disagree with it.
-    // Pin the Hermes CLI so the connector never spawns a bare `hermes` that a PATH shim redirects to
-    // THIS app (which just boots, prints its banner, single-instance-exits — a "task" that ran
-    // nothing). Prefer the venv console-script in the install we manage; leave any explicit env alone.
-    try {
-      if (!process.env.HERMES_BIN) {
-        const updateRoot = resolveUpdateRoot()
+    //
+    // Per-spawn Hermes CLI resolver — replaces the old one-shot HERMES_BIN pin, which silently
+    // no-op'd when the venv was missing at boot and never re-checked. An explicit HERMES_BIN
+    // from the boot environment is honoured; otherwise the venv console-script is re-resolved
+    // on EVERY spawn, so a venv that appears after boot (late bootstrap, a repair) is picked up
+    // without a restart. The resolver never yields a bare 'hermes': on Windows, CreateProcess
+    // searches this app's own directory before PATH and finds Hermes.exe — a bare name is
+    // guaranteed to relaunch the app instead of running a task.
+    const bootHermesBin = process.env.HERMES_BIN || null
+    saraConn.setBinResolver(() => {
+      if (bootHermesBin) return bootHermesBin
+      try {
         const venvHermes = saraPath.join(
-          updateRoot,
+          resolveUpdateRoot(),
           'venv',
           IS_WINDOWS ? 'Scripts' : 'bin',
           IS_WINDOWS ? 'hermes.exe' : 'hermes'
         )
-        if (fileExists(venvHermes)) process.env.HERMES_BIN = venvHermes
+        return fileExists(venvHermes) ? venvHermes : null
+      } catch (e) {
+        console.error('[sara] hermes resolver failed:', (e && e.message) || e)
+        return null
       }
-    } catch (e) {
-      console.error('[sara] HERMES_BIN pin failed:', (e && e.message) || e)
-    }
+    })
+
+    // AUTO-repair: the boot probe (or a failing task) latching engine-broken triggers ONE
+    // automatic repair per process — HR users can't be asked to set env vars or find hidden
+    // buttons. Delayed 30s so it never races a first-launch bootstrap that startHermes() may
+    // already be running; the repair entry point re-checks and bails if an installer is
+    // active or the CLI appeared meanwhile. On failure the widget/tray keep the manual
+    // "Baiki enjin Sarä" affordance.
+    saraConn.onEngineBroken((detail) => {
+      console.error(`[sara] engine broken (${detail}) — tasks cannot run until repaired`)
+      if (saraEngineAutoRepairTried) return
+      saraEngineAutoRepairTried = true
+      setTimeout(() => {
+        try {
+          if (!saraConn.isPaired()) return // unpaired first-run: the normal boot flow installs
+          if (!saraConn.getIdentity().engineBroken) return // resolved itself (late bootstrap)
+          runSaraEngineRepair('auto').catch((e) => console.error('[sara] auto-repair:', (e && e.message) || e))
+        } catch (e) {
+          console.error('[sara] auto-repair trigger failed:', (e && e.message) || e)
+        }
+      }, 30000)
+    })
+
     saraConn.start(app.getPath('userData'))
 
     // Chrome Sara (§5): the visible, persistent-login browser Hermes drives via CDP. LAZY — the
@@ -7774,6 +7881,18 @@ app.whenReady().then(() => {
     saraStore.startCurrentWorkPoll(8000) // one poll now feeds BOTH surfaces
     saraStore.subscribe(broadcastSaraState) // widget window updates by push, never by polling
 
+    // Narrate the engine installer into the widget's repair card. Bootstrap events used to go
+    // ONLY to the never-shown main window, which is how every client install failure stayed
+    // invisible for months.
+    saraBootstrapListener = (ev) => {
+      if (!saraStore || !ev) return
+      const line =
+        ev.type === 'failed'
+          ? `Pemasangan gagal: ${ev.error || 'unknown'}`
+          : ev.line || ev.title || ev.stage || ''
+      if (line) saraStore.setRepairProgress(String(line).replace(/^\[bootstrap\]\s*/, '').slice(0, 160))
+    }
+
     // First-run handoff: an UNPAIRED launch opens the setup page, which pairs this app by itself
     // (it probes our loopback server and POSTs the token — no click, no keys). This is what makes
     // "install → open → connected" true with the app never showing a connect flow of its own.
@@ -7790,6 +7909,7 @@ app.whenReady().then(() => {
       onOpenWidget: () => openSaraWidgetWindow(),
       onOpenWebApp: () => saraDialogs.openExternal(SARA_WEB_APP_URL),
       onOpenSetup: () => saraDialogs.openExternal(SARA_SETUP_URL),
+      onRepairEngine: () => runSaraEngineRepair('tray').catch(() => {}),
     })
 
     // Launching the app must produce an INTERFACE. Tray-only hides the Hermes chat window by

@@ -35,11 +35,50 @@ function appVersion() {
     return ''
   }
 }
-// Resolved LAZILY at each spawn: main.cjs pins HERMES_BIN to the venv CLI, and it may do so after
-// this module is required — capturing it once at load time would freeze the wrong value ('hermes' on
-// PATH). On a packaged client, bare `hermes` can be a PATH shim that relaunches THIS Electron app.
+// Resolved LAZILY at each spawn: main.cjs injects a resolver that re-checks the venv CLI path on
+// EVERY call, so a venv that appears after boot (bootstrap finishing late, a repair) is picked up
+// without a restart. NEVER falls back to a bare 'hermes': on Windows, CreateProcess searches the
+// calling app's own directory BEFORE PATH, and that directory contains Hermes.exe — a bare name is
+// GUARANTEED to relaunch this app, boot-banner out, and "complete" a task that ran nothing. No
+// resolvable CLI ⇒ null ⇒ the engine-broken latch below (an honest failure, not a fake success).
+let binResolver = () => process.env.HERMES_BIN || null
+function setBinResolver(fn) {
+  if (typeof fn === 'function') binResolver = fn
+}
 function hermesBin() {
-  return process.env.HERMES_BIN || 'hermes'
+  try {
+    return binResolver() || null
+  } catch {
+    return null
+  }
+}
+
+// Engine-health latch (same shape as authBad): set when the Hermes CLI is missing or a spawn
+// resolved to the app itself; cleared by any successful probe/run. main.cjs subscribes via
+// onEngineBroken to trigger auto-repair; the widget + tray render it via getIdentity(). Without
+// this, a laptop failing 100% of its tasks looks identical to a healthy idle one.
+let engineBrokenCb = null
+function onEngineBroken(cb) {
+  engineBrokenCb = typeof cb === 'function' ? cb : null
+}
+function noteEngineBroken(detail) {
+  const first = !state.engineBroken
+  state.engineBroken = true
+  state.engineDetail = String(detail || '')
+  if (first && engineBrokenCb) {
+    try {
+      engineBrokenCb(state.engineDetail)
+    } catch {}
+  }
+}
+function clearEngineBroken() {
+  state.engineBroken = false
+  state.engineDetail = ''
+}
+// While the installer runs we stop claiming tasks — they wait Queued on the server instead of
+// failing mid-repair. main.cjs flips this around its repair flow.
+function setRepairing(v) {
+  state.repairing = !!v
 }
 // Boot-banner phrases this app prints (main.cjs install-stamp, connector-started, tray-created). If a
 // spawned "hermes" emits ≥2 of these, HERMES resolved to the app itself: the 2nd instance hits the
@@ -70,6 +109,11 @@ const state = {
   // re-generated elsewhere, every call 401s while both surfaces still say Connected — that
   // exact incident is why this flag exists. Set on any 401, cleared on any authed success.
   authBad: false,
+  // Engine-health truth (see noteEngineBroken): the Hermes CLI is missing/mis-resolved,
+  // so tasks CANNOT run on this machine until a repair. detail: 'missing' | 'app-shim'.
+  engineBroken: false,
+  engineDetail: '',
+  repairing: false,
 }
 let userDataDir = null
 let pollTimer = null
@@ -150,8 +194,15 @@ async function whoami() {
 
 // The UI's line "Connected as …" / "Connection expired". `user` may be '' on pre-field pairings
 // until whoami() lands; authBad flips live from the poll (401 ⇒ true, any success ⇒ false).
+// engineBroken/repairing ride along so the store needs no second mirror channel.
 function getIdentity() {
-  return { user: state.userEmail || '', authBad: !!state.authBad }
+  return {
+    user: state.userEmail || '',
+    authBad: !!state.authBad,
+    engineBroken: !!state.engineBroken,
+    engineDetail: state.engineDetail || '',
+    repairing: !!state.repairing,
+  }
 }
 
 // ── (2) LLM sidecar: Hermes → here → hcos llm_proxy → MiniMax ────────────
@@ -315,6 +366,8 @@ function startPairing(onPaired) {
 
 // ── Hermes: point it at the sidecar (auto-config) ────────────────────────
 function ensureHermesConfig() {
+  const bin = hermesBin()
+  if (!bin) return // no CLI yet (pre-bootstrap / mid-repair) — main.cjs re-invokes after repair
   const settings = [
     ['model.default', 'MiniMax-M3'],
     ['model.provider', 'minimax'],
@@ -326,7 +379,7 @@ function ensureHermesConfig() {
   ]
   for (const [k, v] of settings) {
     try {
-      spawn(hermesBin(), ['config', 'set', k, v], { stdio: 'ignore' })
+      spawn(bin, ['config', 'set', k, v], { stdio: 'ignore' })
     } catch {
       /* best-effort */
     }
@@ -394,10 +447,19 @@ function probeToolsets() {
       console.log(`[sara] toolset gating ${ok ? 'AVAILABLE — Chrome mode restricts Sarä to the browser' : 'unavailable — Whole Computer / Chrome are labels only on this Hermes'}`)
       resolve(ok)
     }
+    const bin = hermesBin()
+    if (!bin) {
+      // The CLI doesn't exist on this machine at all — that's an ENGINE alarm, not
+      // merely "gating unavailable". Latching here makes the boot probe double as
+      // the engine-health check that triggers auto-repair.
+      noteEngineBroken('missing')
+      return finish(false)
+    }
     let child
     try {
-      child = spawn(hermesBin(), ['chat', '--list-toolsets'], { windowsHide: true })
+      child = spawn(bin, ['chat', '--list-toolsets'], { windowsHide: true })
     } catch {
+      noteEngineBroken('missing')
       return finish(false)
     }
     const t = setTimeout(() => {
@@ -409,11 +471,14 @@ function probeToolsets() {
     child.stdout && child.stdout.on('data', (d) => (out += d))
     child.on('error', () => {
       clearTimeout(t)
+      noteEngineBroken('missing') // ENOENT: the resolved path vanished
       finish(false)
     })
     child.on('close', (code) => {
       clearTimeout(t)
-      finish(code === 0 && /\bbrowser\b/i.test(out))
+      const ok = code === 0 && /\bbrowser\b/i.test(out)
+      if (ok || code === 0) clearEngineBroken() // the CLI ran — engine is real (gating may still be off)
+      finish(ok)
     })
   })
 }
@@ -458,9 +523,21 @@ function runHermes(prompt, onProgress) {
     const scanErr = scanFactory()
     let child
     const bin = hermesBin()
+    if (!bin) {
+      // Keep the SARA_ENGINE_MISSING token in lockstep with the server's
+      // _humanize_desktop_error (hros.api.sarah_desktop) — it maps this to the
+      // user-facing Malay "engine not installed" message in the chat.
+      noteEngineBroken('missing')
+      return resolve({
+        error:
+          'SARA_ENGINE_MISSING: the Hermes CLI venv is not installed on this machine — ' +
+          'Sarä Desktop needs its engine repaired before tasks can run.',
+      })
+    }
     try {
       child = spawn(bin, hermesChatArgs(prompt), { windowsHide: true })
     } catch (e) {
+      noteEngineBroken('missing')
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
     }
     const t = setTimeout(() => {
@@ -479,29 +556,39 @@ function runHermes(prompt, onProgress) {
     })
     child.on('error', (e) => {
       clearTimeout(t)
+      noteEngineBroken('missing') // ENOENT: the resolved path vanished mid-flight
       resolve({ error: `hermes not found (${bin}): ${(e && e.message) || e}` })
     })
     child.on('close', (code) => {
       clearTimeout(t)
       // HERMES mis-resolved to THIS app (a PATH shim relaunched us): the 2nd instance printed its
       // boot banner and single-instance-exited 0 without running anything. Fail loudly — a fake
-      // "success" here is exactly what let an empty task show a green ✓.
+      // "success" here is exactly what let an empty task show a green ✓. With the per-spawn
+      // resolver this should be unreachable; if it fires anyway, it's an engine alarm too.
       if (looksLikeAppBanner(out)) {
+        noteEngineBroken('app-shim')
         return resolve({
           error:
-            `hermes resolved to the desktop app, not the CLI (bin=${bin}). No task ran — set ` +
-            `HERMES_BIN to the venv hermes and restart Sarä.`,
+            `SARA_ENGINE_MISSING: hermes resolved to the desktop app, not the CLI (bin=${bin}). ` +
+            `No task ran — Sarä Desktop needs its engine repaired.`,
         })
       }
       if (code !== 0) resolve({ error: (err || out || `hermes exit ${code}`).slice(0, 2000) })
-      else resolve({ result: extractAnswer(out) || '(no output)' })
+      else {
+        clearEngineBroken() // a real run completed — the engine works
+        resolve({ result: extractAnswer(out) || '(no output)' })
+      }
     })
   })
 }
 
 // ── (1) task bridge ──────────────────────────────────────────────────────
 async function pollOnce() {
-  if (claiming || state.paused || !isPaired()) return
+  // While the engine installer runs, DON'T claim — tasks wait Queued on the server
+  // instead of failing mid-repair. (engineBroken alone does NOT stop claiming: each
+  // claimed task then fails fast with SARA_ENGINE_MISSING, which the server turns
+  // into an actionable chat message — far better than sitting Queued in silence.)
+  if (claiming || state.paused || state.repairing || !isPaired()) return
   claiming = true
   try {
     // This poll doubles as the server-side heartbeat, so it's also where we report our version.
@@ -699,9 +786,16 @@ module.exports = {
   // Additive — so sara-state.cjs can be the ONE owner of widget state without a second store:
   readConfig, // the persisted sara-config.json (creds + watch + our own {sara:{…}} block)
   patchConfig: saveCreds, // MERGING write — never clobbers creds or watch
-  getIdentity, // {user, authBad} — "Connected as …" / "Connection expired" for the UI
+  getIdentity, // {user, authBad, engineBroken, engineDetail, repairing} — for the UI
   getWatch, // the truth about recording
   onWatchChange, // …and a subscription to it
+  // Engine health + repair plumbing (main.cjs wires these):
+  setBinResolver, // main injects the per-spawn venv-CLI resolver — never a bare 'hermes'
+  onEngineBroken, // main subscribes to trigger auto-repair on first detection
+  clearEngineBroken, // main clears after a successful repair
+  setRepairing, // pause task-claiming while the installer runs
+  probeToolsets, // re-probe after a repair (also re-latches gating)
+  ensureHermesConfig, // re-point the freshly installed CLI at the sidecar
   // Workspace → toolset gating (Whole Computer made real):
   setToolsetMode, // the store pushes 'chrome'|'whole'|'pause' on a workspace change
   isToolsetGatingAvailable, // did the boot probe confirm --toolsets works? (drives honest copy)

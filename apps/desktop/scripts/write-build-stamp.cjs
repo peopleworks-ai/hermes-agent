@@ -11,10 +11,17 @@
  *     "schemaVersion": 1,
  *     "commit":        "<40-char SHA>",
  *     "branch":        "<branch name>",
+ *     "repo":          "<owner/name the commit lives on, e.g. peopleworks-ai/hermes-agent>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
  *     "source":        "ci" | "local"
  *   }
+ *
+ * `repo` is an ADDITIVE optional field (schemaVersion stays 1): readers fall
+ * back to DEFAULT_REPO when it's absent (stamps from older builds). It exists
+ * because the bootstrap used to hardcode the upstream NousResearch org — fork
+ * CI SHAs don't exist there, so every packaged client 404'd on install.ps1
+ * and no client ever successfully self-bootstrapped.
  *
  * Source preference order:
  *   1. CI env vars ($GITHUB_SHA / $GITHUB_REF_NAME) -- avoid edge cases with
@@ -31,6 +38,9 @@ const path = require("path")
 const { execSync } = require("child_process")
 
 const STAMP_SCHEMA_VERSION = 1
+// The repo the pinned commit is fetchable from. Keep in sync with
+// DEFAULT_REPO in electron/bootstrap-runner.cjs.
+const DEFAULT_REPO = "peopleworks-ai/hermes-agent"
 
 const DESKTOP_ROOT = path.resolve(__dirname, "..")
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, "..", "..")
@@ -52,9 +62,16 @@ function fromCI() {
   return {
     commit: sha,
     branch: branch,
+    repo: process.env.GITHUB_REPOSITORY || DEFAULT_REPO,
     dirty: false, // CI builds from a checkout-of-ref by definition
     source: "ci"
   }
+}
+
+// "git@github.com:owner/name.git" / "https://github.com/owner/name.git" -> "owner/name"
+function repoFromRemoteUrl(url) {
+  const m = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url || "")
+  return m ? m[1] : null
 }
 
 function fromLocalGit() {
@@ -72,6 +89,7 @@ function fromLocalGit() {
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
+    repo: repoFromRemoteUrl(tryExec("git remote get-url origin", { cwd: REPO_ROOT })) || DEFAULT_REPO,
     dirty: dirty,
     source: "local"
   }
@@ -106,6 +124,7 @@ function main() {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
     branch: stamp.branch,
+    repo: stamp.repo || DEFAULT_REPO,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source

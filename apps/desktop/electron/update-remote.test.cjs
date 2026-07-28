@@ -27,14 +27,14 @@ const {
 } = require('./update-remote.cjs')
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
-  assert.equal(canonicalGitHubRemote('git@github.com:NousResearch/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
-  assert.equal(canonicalGitHubRemote('git@github.com:NousResearch/hermes-agent'), OFFICIAL_REPO_CANONICAL)
-  assert.equal(canonicalGitHubRemote('ssh://git@github.com/NousResearch/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
-  assert.equal(canonicalGitHubRemote('https://github.com/NousResearch/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('git@github.com:peopleworks-ai/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('git@github.com:peopleworks-ai/hermes-agent'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('ssh://git@github.com/peopleworks-ai/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('https://github.com/peopleworks-ai/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
   // Case-insensitive: an uppercased owner still canonicalizes to the same repo.
-  assert.equal(canonicalGitHubRemote('git@github.com:nousresearch/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('git@github.com:Peopleworks-AI/hermes-agent.git'), OFFICIAL_REPO_CANONICAL)
   // Trailing slashes are stripped.
-  assert.equal(canonicalGitHubRemote('https://github.com/NousResearch/hermes-agent/'), OFFICIAL_REPO_CANONICAL)
+  assert.equal(canonicalGitHubRemote('https://github.com/peopleworks-ai/hermes-agent/'), OFFICIAL_REPO_CANONICAL)
 })
 
 test('canonicalGitHubRemote is empty for falsy input', () => {
@@ -52,22 +52,25 @@ test('isSshRemote detects scp-like and ssh:// forms only', () => {
 })
 
 test('isOfficialSshRemote is true only for the official repo over SSH', () => {
-  assert.equal(isOfficialSshRemote('git@github.com:NousResearch/hermes-agent.git'), true)
-  assert.equal(isOfficialSshRemote('git@github.com:NousResearch/hermes-agent'), true)
-  assert.equal(isOfficialSshRemote('ssh://git@github.com/NousResearch/hermes-agent.git'), true)
+  assert.equal(isOfficialSshRemote('git@github.com:peopleworks-ai/hermes-agent.git'), true)
+  assert.equal(isOfficialSshRemote('git@github.com:peopleworks-ai/hermes-agent'), true)
+  assert.equal(isOfficialSshRemote('ssh://git@github.com/peopleworks-ai/hermes-agent.git'), true)
   // Case-insensitive owner/repo match.
-  assert.equal(isOfficialSshRemote('git@github.com:nousresearch/hermes-agent.git'), true)
+  assert.equal(isOfficialSshRemote('git@github.com:Peopleworks-AI/hermes-agent.git'), true)
 })
 
 test('isOfficialSshRemote does NOT match forks, other hosts, or HTTPS', () => {
+  // The upstream we forked FROM is not our official repo — its history lacks
+  // the fork's CI SHAs, so treating it as official would compare the wrong repo.
+  assert.equal(isOfficialSshRemote('git@github.com:NousResearch/hermes-agent.git'), false)
   // A fork over SSH belongs to the user — fetching it is their own remote,
   // not the official upstream, so the SSH-avoidance swap must not apply.
   assert.equal(isOfficialSshRemote('git@github.com:someuser/hermes-agent.git'), false)
   // Same repo name on a different host is not the official repo.
-  assert.equal(isOfficialSshRemote('git@gitlab.com:NousResearch/hermes-agent.git'), false)
+  assert.equal(isOfficialSshRemote('git@gitlab.com:peopleworks-ai/hermes-agent.git'), false)
   // HTTPS to the official repo never prompts for SSH/FIDO2, so it keeps the
   // normal fetch path — must not be flagged as an official SSH remote.
-  assert.equal(isOfficialSshRemote('https://github.com/NousResearch/hermes-agent.git'), false)
+  assert.equal(isOfficialSshRemote('https://github.com/peopleworks-ai/hermes-agent.git'), false)
   assert.equal(isOfficialSshRemote(''), false)
   assert.equal(isOfficialSshRemote(null), false)
 })

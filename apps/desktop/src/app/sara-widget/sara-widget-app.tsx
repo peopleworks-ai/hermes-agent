@@ -105,7 +105,7 @@ function StatusPill({ state }: { state: SaraWidgetState }) {
 }
 
 export function SaraWidgetApp() {
-  const { state, setWorkspace, setLearning, openWebApp, openSetup, quit } = useSaraState()
+  const { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, quit } = useSaraState()
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -146,6 +146,34 @@ export function SaraWidgetApp() {
                 type="button"
               >
                 Open the setup page to Re-connect
+              </button>
+            </div>
+          ) : state.repairing ? (
+            /* The engine installer is running — narrate it. Bootstrap progress used to render
+               only into the never-shown main window, so install failures were invisible. */
+            <div className="py-2 text-center">
+              <p className="text-xs font-semibold text-foreground">Memasang enjin Sarä…</p>
+              <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                {state.repairProgress || 'Ini mungkin mengambil beberapa minit. Tugasan menunggu sehingga siap.'}
+              </p>
+            </div>
+          ) : state.engineBroken && state.paired ? (
+            /* The Hermes CLI is missing — every task would fail. Same honesty contract as the
+               expired-token card: a machine that can't run tasks must not look healthy-idle. */
+            <div className="py-2 text-center">
+              <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                Enjin Sarä belum siap dipasang
+              </p>
+              <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
+                Tugasan tidak dapat berjalan pada komputer ini sehingga enjin dipasang.
+                {state.repairProgress ? ` (${state.repairProgress})` : ''}
+              </p>
+              <button
+                className="mt-2 rounded-md border border-border px-2 py-1 text-[0.6875rem] font-medium hover:bg-accent"
+                onClick={repairEngine}
+                type="button"
+              >
+                Baiki enjin Sarä
               </button>
             </div>
           ) : !state.paired ? (
