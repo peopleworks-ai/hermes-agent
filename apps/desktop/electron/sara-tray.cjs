@@ -45,7 +45,15 @@ function loadTrayIcon(iconPath) {
 }
 
 function initSaraTray(app, opts = {}) {
-  const { store, iconPath, onOpenWidget = null, onOpenWebApp = null, onOpenSetup = null, onRepairEngine = null } = opts
+  const {
+    store,
+    iconPath,
+    onOpenWidget = null,
+    onOpenWebApp = null,
+    onOpenSetup = null,
+    onRepairEngine = null,
+    onApplyUpdate = null,
+  } = opts
   if (!store) throw new Error('initSaraTray: a sara-state store is required')
 
   const img = loadTrayIcon(iconPath)
@@ -95,6 +103,12 @@ function initSaraTray(app, opts = {}) {
       identityLine.push({ label: '⏳ Memasang enjin Sarä…', enabled: false })
     } else if (s.engineBroken) {
       identityLine.push({ label: '⚠ Baiki enjin Sarä', click: () => onRepairEngine && onRepairEngine() })
+    }
+    // Same honesty contract again: an app with a pending update must not look identical to a
+    // current one. The line appears only when main.cjs's periodic checkUpdates() says we're
+    // behind the release branch; clicking hands off to the EXISTING applyUpdates flow.
+    if (s.updateBehind > 0 && onApplyUpdate) {
+      identityLine.push({ label: '⬆ Update tersedia — klik untuk pasang', click: () => onApplyUpdate() })
     }
 
     template.push(
