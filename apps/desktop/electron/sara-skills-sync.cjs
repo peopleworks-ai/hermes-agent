@@ -92,4 +92,57 @@ async function syncDesktopSkills({ base, key, secret, userDataDir, log = console
   return { total: skills.length, changed, dir: skillsDir }
 }
 
-module.exports = { syncDesktopSkills, hermesSkillsDir }
+// ── Heart sync: server-managed section of HERMES_HOME/SOUL.md ────────────────
+// Platform ethics + the company SOUL resolved for THIS laptop's user, composed
+// server-side (hros.api.agent_resources.get_desktop_heart). Written between
+// markers so anything a user keeps in SOUL.md outside the section survives.
+// The engine loads SOUL.md as identity slot #1 (agent/prompt_builder.load_soul_md),
+// so these rules bind even for tasks that never touched the hcos chat brain.
+const HEART_BEGIN = '<!-- SARA-HEART BEGIN (managed by HCOS — edits inside are overwritten) -->'
+const HEART_END = '<!-- SARA-HEART END -->'
+
+function hermesHomeDir() {
+  const envHome = (process.env.HERMES_HOME || '').trim()
+  return envHome
+    ? envHome
+    : process.platform === 'win32'
+      ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'hermes')
+      : path.join(os.homedir(), '.hermes')
+}
+
+function spliceHeart(existing, section) {
+  const b = existing.indexOf(HEART_BEGIN)
+  const e = existing.indexOf(HEART_END)
+  if (b !== -1 && e !== -1 && e > b) {
+    return existing.slice(0, b) + section + existing.slice(e + HEART_END.length)
+  }
+  // No markers yet — heart goes on top (identity reads it first), local content kept below.
+  return existing.trim() ? `${section}\n\n${existing}` : section
+}
+
+async function syncHeart({ base, key, secret, userDataDir, log = console.log }) {
+  const auth = { Authorization: `token ${key}:${secret}` }
+  const r = await fetch(`${base}/api/method/hros.api.agent_resources.get_desktop_heart`, { headers: auth })
+  if (!r.ok) throw Object.assign(new Error(`get_desktop_heart HTTP ${r.status}`), { status: r.status })
+  const j = await r.json().catch(() => ({}))
+  const heart = (j && j.message) || {}
+  const manifest = readManifest(userDataDir)
+  if (!heart.content) return { changed: false, reason: 'empty' } // nothing configured server-side — leave SOUL.md alone
+  if (manifest.__heart === heart.hash) return { changed: false, reason: 'unchanged' }
+
+  const home = hermesHomeDir()
+  await fs.promises.mkdir(home, { recursive: true })
+  const soulPath = path.join(home, 'SOUL.md')
+  let existing = ''
+  try {
+    existing = await fs.promises.readFile(soulPath, 'utf8')
+  } catch {}
+  const section = `${HEART_BEGIN}\n${heart.content}\n${HEART_END}`
+  await fs.promises.writeFile(soulPath, spliceHeart(existing, section))
+  manifest.__heart = heart.hash
+  writeManifest(userDataDir, manifest)
+  log(`[sara] heart synced → ${soulPath}`)
+  return { changed: true }
+}
+
+module.exports = { syncDesktopSkills, syncHeart, hermesSkillsDir }

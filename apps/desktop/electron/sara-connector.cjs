@@ -18,7 +18,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 const { spawn } = require('node:child_process')
-const { syncDesktopSkills } = require('./sara-skills-sync.cjs')
+const { syncDesktopSkills, syncHeart } = require('./sara-skills-sync.cjs')
 
 const LLM_PORT = Number(process.env.SARA_LLM_PORT || 8760)
 const PAIR_PORT = Number(process.env.SARA_PAIR_PORT || 8761)
@@ -770,6 +770,11 @@ function syncSkills() {
   syncDesktopSkills({ base: state.base, key: state.key, secret: state.secret, userDataDir })
     .then((r) => r.changed && console.log(`[sara] desktop skills: ${r.changed}/${r.total} updated`))
     .catch((e) => console.log('[sara] skills sync error:', (e && e.message) || e))
+  // Heart (SOUL.md managed section): same cadence, independent failure domain —
+  // a broken skills registry must not block ethics landing, and vice versa.
+  syncHeart({ base: state.base, key: state.key, secret: state.secret, userDataDir })
+    .then((r) => r.changed && console.log('[sara] heart (SOUL.md) updated'))
+    .catch((e) => console.log('[sara] heart sync error:', (e && e.message) || e))
 }
 
 function start(dir, onPaired) {
