@@ -47,6 +47,7 @@ const DEFAULT_STATE = Object.freeze({
   engineDetail: '', // 'missing' | 'app-shim'
   repairing: false, // connector truth: the engine installer is running (claims paused)
   repairProgress: '', // one-line installer progress from main.cjs, for the widget card
+  updateBehind: 0, // main.cjs truth (checkUpdates): commits behind the release branch; 0 = current
 })
 
 const NO_WATCH = { screen: false, voice: false }
@@ -341,6 +342,15 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     emit()
   }
 
+  // Mirrored from main.cjs's periodic checkUpdates() — like `recording`, the UI renders it,
+  // never asserts it. 0 clears the tray line; applying an update exits the process anyway.
+  function setUpdateBehind(n) {
+    const updateBehind = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+    if (updateBehind === state.updateBehind) return
+    state = { ...state, updateBehind }
+    emit()
+  }
+
   // One-line progress from the engine installer (main.cjs forwards bootstrap events),
   // so the widget's repair card can narrate "Memasang enjin Sarä… <stage>" live.
   function setRepairProgress(text) {
@@ -404,6 +414,7 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     setCurrentWork,
     setPaired,
     setIdentity,
+    setUpdateBehind,
     setRepairProgress,
     syncRecording,
     hydrateFromConnector,

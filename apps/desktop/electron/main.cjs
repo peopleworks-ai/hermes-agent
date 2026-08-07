@@ -7935,7 +7935,53 @@ app.whenReady().then(() => {
       onOpenWebApp: () => saraDialogs.openExternal(SARA_WEB_APP_URL),
       onOpenSetup: () => saraDialogs.openExternal(SARA_SETUP_URL),
       onRepairEngine: () => runSaraEngineRepair('tray').catch(() => {}),
+      onApplyUpdate: () => applySaraUpdateFromTray().catch((e) => console.error('[sara] update apply failed:', (e && e.message) || e)),
     })
+
+    // Self-update surface for tray-only mode. Detection (checkUpdates) and apply
+    // (applyUpdates) already exist — but both were only ever driven by the Hermes
+    // dashboard renderer, which never runs while the chat window stays hidden, so a
+    // client install would NEVER learn an update existed. Feed the same check into
+    // the sara store on a slow tick; the tray renders "⬆ Update tersedia" when
+    // behind > 0. The first tick is delayed so it can't race first-launch
+    // bootstrap/pairing; an unsupported or failed check (offline, non-git install)
+    // clears the line rather than nagging with stale truth.
+    async function applySaraUpdateFromTray() {
+      const picked = dialog.showMessageBoxSync({
+        type: 'question',
+        buttons: ['Update sekarang', 'Nanti dulu'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Sarä Desktop',
+        message: 'Update Sarä Desktop sekarang?',
+        detail:
+          'Sarä akan tutup sekejap untuk memasang kemas kini, kemudian buka semula sendiri. Kerja yang sedang berjalan akan terhenti.',
+      })
+      if (picked !== 0) return
+      try {
+        const r = await applyUpdates({})
+        if (r && r.manual) {
+          // Source/CLI install (no staged updater) — the honest affordance is the exact command.
+          saraDialogs.toast(`Update manual: jalankan \`${r.command}\` dalam terminal, kemudian buka semula Sarä.`)
+        } else if (r && r.ok === false) {
+          saraDialogs.toast(`Update gagal: ${r.error || 'unknown'}`)
+        }
+        // handedOff ⇒ the app is quitting so the updater can take over — nothing to show.
+      } catch (e) {
+        saraDialogs.toast(`Update gagal: ${(e && e.message) || e}`)
+      }
+    }
+    const saraUpdateTick = () => {
+      checkUpdates()
+        .then((r) => {
+          const behind = r && r.supported && !r.error ? Number(r.behind) || 0 : 0
+          if (saraStore) saraStore.setUpdateBehind(behind)
+          if (behind > 0) console.log(`[sara] update available: ${behind} behind ${r.branch}`)
+        })
+        .catch((e) => console.error('[sara] update check failed:', (e && e.message) || e))
+    }
+    setTimeout(saraUpdateTick, 90 * 1000)
+    setInterval(saraUpdateTick, 6 * 60 * 60 * 1000)
 
     // Launching the app must produce an INTERFACE. Tray-only hides the Hermes chat window by
     // design, which left a desktop-icon double-click showing nothing at all — the app "started"

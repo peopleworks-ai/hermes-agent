@@ -389,3 +389,28 @@ test('store: setIdentity mirrors the connector and notifies views; no-op when un
   assert.equal(store.getState().authBad, true, 'a 401 must surface, not hide behind "Connected"')
   assert.equal(notified, 2)
 })
+
+test('store: setUpdateBehind mirrors the update check and notifies views; junk clears to 0', () => {
+  const { connector, chrome, dialogs } = makeFakes({})
+  const store = createSaraStore({ connector, chrome, dialogs })
+  let notified = 0
+  store.subscribe(() => (notified += 1))
+
+  assert.equal(store.getState().updateBehind, 0, 'default: current, no update line')
+
+  store.setUpdateBehind(3)
+  assert.equal(store.getState().updateBehind, 3)
+  assert.equal(notified, 1)
+
+  store.setUpdateBehind(3)
+  assert.equal(notified, 1, 'identical count must not re-emit')
+
+  // A failed/unsupported check reports junk — the line must CLEAR, not nag with stale truth.
+  store.setUpdateBehind(NaN)
+  assert.equal(store.getState().updateBehind, 0)
+  assert.equal(notified, 2)
+
+  store.setUpdateBehind(-1)
+  assert.equal(store.getState().updateBehind, 0, 'negative counts clamp to 0 without emitting again')
+  assert.equal(notified, 2)
+})

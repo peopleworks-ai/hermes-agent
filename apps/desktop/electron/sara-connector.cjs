@@ -18,6 +18,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 const { spawn } = require('node:child_process')
+const { syncDesktopSkills } = require('./sara-skills-sync.cjs')
 
 const LLM_PORT = Number(process.env.SARA_LLM_PORT || 8760)
 const PAIR_PORT = Number(process.env.SARA_PAIR_PORT || 8761)
@@ -218,6 +219,7 @@ const state = {
 }
 let userDataDir = null
 let pollTimer = null
+let skillsTimer = null
 let sidecarSrv = null
 let pairSrv = null
 let claiming = false
@@ -872,6 +874,13 @@ function resumeWatchIfEnabled() {
   }
 }
 
+function syncSkills() {
+  if (!isPaired()) return
+  syncDesktopSkills({ base: state.base, key: state.key, secret: state.secret, userDataDir })
+    .then((r) => r.changed && console.log(`[sara] desktop skills: ${r.changed}/${r.total} updated`))
+    .catch((e) => console.log('[sara] skills sync error:', (e && e.message) || e))
+}
+
 function start(dir, onPaired) {
   userDataDir = dir
   loadCreds()
@@ -879,6 +888,11 @@ function start(dir, onPaired) {
   startSidecar()
   startPairing(onPaired)
   ensureHermesConfig()
+  // Desktop Skills registry → HERMES_HOME/skills: on boot, a one-minute retry
+  // (covers pairing-just-completed on first launch), then daily.
+  syncSkills()
+  setTimeout(syncSkills, 60_000)
+  if (!skillsTimer) skillsTimer = setInterval(syncSkills, 24 * 3600 * 1000)
   if (!pollTimer) pollTimer = setInterval(pollOnce, POLL_MS)
   resumeWatchIfEnabled()
   try {
@@ -894,6 +908,8 @@ function start(dir, onPaired) {
 function stop() {
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = null
+  if (skillsTimer) clearInterval(skillsTimer)
+  skillsTimer = null
   stopHeartbeat()
   try {
     sidecarSrv && sidecarSrv.close()
@@ -913,6 +929,7 @@ module.exports = {
   start,
   stop,
   setHomeResolver,
+  syncSkills, // Desktop Skills registry → HERMES_HOME/skills (manual trigger)
   // Exported for apps/desktop/electron/sara-bundle.test.cjs — the path-escape
   // guard and the hash short-circuit are the parts worth a regression test.
   syncConversationBundle,
