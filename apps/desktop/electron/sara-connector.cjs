@@ -690,7 +690,16 @@ function runHermes(prompt, onProgress, cwd) {
             'was performed. Configuration re-applied; retry the task.',
         })
       }
-      if (code !== 0) resolve({ error: (err || out || `hermes exit ${code}`).slice(0, 2000) })
+      if (code !== 0) {
+        // The TAIL, not the head. Hermes opens with its banner and an echo of the
+        // prompt (which now carries the platform-ethics prefix), and prints WHY it
+        // stopped at the very end. Slicing from the front shipped 2000 characters
+        // of preamble and cut the actual reason off — so the server's error
+        // humaniser saw nothing it could recognise and the user got a wall of
+        // unrelated text instead of "the model refused, press Retry".
+        const raw = err || out || `hermes exit ${code}`
+        resolve({ error: raw.length > 2000 ? '…' + raw.slice(-2000) : raw })
+      }
       else {
         clearEngineBroken() // a real run completed — the engine works
         resolve({ result: extractAnswer(out) || '(no output)' })
