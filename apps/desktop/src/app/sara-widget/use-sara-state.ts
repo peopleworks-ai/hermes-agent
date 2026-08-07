@@ -64,5 +64,11 @@ export function useSaraState() {
     void window.hermesDesktop?.sara?.repairEngine()
   }, [])
 
-  return { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, quit }
+  // Fire-and-forget like repairEngine: the app quits to hand off to the
+  // installer, so there is no success state to wait for.
+  const applyUpdate = useCallback(() => {
+    void window.hermesDesktop?.sara?.applyUpdate()
+  }, [])
+
+  return { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, applyUpdate, quit }
 }

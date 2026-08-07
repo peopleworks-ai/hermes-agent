@@ -105,7 +105,7 @@ function StatusPill({ state }: { state: SaraWidgetState }) {
 }
 
 export function SaraWidgetApp() {
-  const { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, quit } = useSaraState()
+  const { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, applyUpdate, quit } = useSaraState()
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -271,6 +271,30 @@ export function SaraWidgetApp() {
 
       </div>
 
+      {/* An update the user can act on, where they will actually see it. The tray
+          already offers this, but the tray is an icon most people never open —
+          the widget is the app's face. Same IPC, same confirm dialog, so there is
+          one update flow rather than two that can drift apart. */}
+      {state.updateBehind > 0 ? (
+        <button
+          className="flex w-full items-center justify-between gap-2 border-t border-border bg-accent/60 px-3 py-2 text-left hover:bg-accent"
+          onClick={applyUpdate}
+          type="button"
+        >
+          <span>
+            <span className="block text-[0.75rem] font-medium text-foreground">
+              ⬆ Versi baharu tersedia
+            </span>
+            <span className="block text-[0.6875rem] text-muted-foreground">
+              {state.updateBehind} kemas kini di belakang. Sarä akan tutup sekejap lalu buka semula.
+            </span>
+          </span>
+          <span className="shrink-0 rounded-md bg-primary px-2 py-1 text-[0.6875rem] font-medium text-primary-foreground">
+            Update
+          </span>
+        </button>
+      ) : null}
+
       <footer className="flex items-center justify-between gap-2 border-t border-border p-2">
         <button
           className="rounded-md px-2 py-1 text-[0.6875rem] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -279,6 +303,15 @@ export function SaraWidgetApp() {
         >
           Open Sarä Web App
         </button>
+        {/* Always visible, even when current: "which version am I on" is the first
+            question in every support conversation about this app. */}
+        <span
+          className="select-text text-[0.6875rem] tabular-nums text-muted-foreground"
+          title={state.updateBehind > 0 ? `${state.updateBehind} kemas kini di belakang` : 'Terkini'}
+        >
+          v{state.version || '—'}
+          {state.updateBehind > 0 ? ' •' : ''}
+        </span>
         <button
           className="rounded-md px-2 py-1 text-[0.6875rem] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={quit}

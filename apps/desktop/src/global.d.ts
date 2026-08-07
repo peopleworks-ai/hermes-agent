@@ -25,6 +25,7 @@ declare global {
         openSetup: () => Promise<{ ok: boolean }>
         /** Re-runs the Hermes engine installer (the "Baiki enjin Sarä" button). */
         repairEngine: () => Promise<{ ok: boolean; busy?: boolean }>
+        applyUpdate: () => Promise<{ ok: boolean; error?: string }>
         quit: () => Promise<{ ok: boolean }>
         /** Live push from the main-process store. Returns an unsubscribe. */
         onState: (callback: (state: SaraWidgetState) => void) => () => void

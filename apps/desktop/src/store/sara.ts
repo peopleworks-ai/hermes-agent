@@ -36,6 +36,11 @@ export interface SaraWidgetState {
   repairing: boolean
   /** One-line live progress from the installer, for the repair card. */
   repairProgress: string
+  /** This app's own version, so the widget can say what is installed. */
+  version: string
+  /** Commits behind the release branch; 0 = current. The tray already acts on
+   *  this; the widget shows it too because the tray icon is easy to miss. */
+  updateBehind: number
 }
 
 /** Used until the first IPC round-trip lands — and when the surface is opened in a plain browser. */
@@ -52,7 +57,9 @@ export const SARA_DEFAULT_STATE: SaraWidgetState = {
   engineBroken: false,
   engineDetail: '',
   repairing: false,
-  repairProgress: ''
+  repairProgress: '',
+  version: '',
+  updateBehind: 0
 }
 
 // Mirrors electron/sara-copy.cjs. Kept short here — the long consent text lives in the dialogs the

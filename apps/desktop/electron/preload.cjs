@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // Re-run the Hermes engine installer (marker + latch clear + startHermes + re-probe).
     // The widget's "Baiki enjin Sarä" button; auto-repair uses the same path in main.
     repairEngine: () => ipcRenderer.invoke('hermes:sara:repairEngine'),
+    applyUpdate: () => ipcRenderer.invoke('hermes:sara:applyUpdate'),
     quit: () => ipcRenderer.invoke('hermes:sara:quit'),
     // Live push from the store — the widget never polls.
     onState: callback => {

@@ -6338,6 +6338,21 @@ async function runSaraEngineRepair(trigger) {
 
 ipcMain.handle('hermes:sara:repairEngine', async () => runSaraEngineRepair('widget'))
 
+// The widget's ⬆ button. Deliberately the SAME path as the tray's menu item —
+// applySaraUpdateFromTray raises the confirm dialog and hands off to the
+// installer — so there is one update flow with one consent prompt, not two that
+// can drift. Declared here; the tray defines it inside the widget-init closure,
+// so this looks it up at call time rather than capturing it.
+ipcMain.handle('hermes:sara:applyUpdate', async () => {
+  if (typeof globalThis.__saraApplyUpdate !== 'function') return { ok: false, error: 'unavailable' }
+  try {
+    await globalThis.__saraApplyUpdate()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) }
+  }
+})
+
 // --- Pet overlay (pop-out mascot) -----------------------------------------
 // `request` is `{ bounds, screen }`. A fresh pop-out passes viewport-space
 // bounds (screen=false): convert to screen space by adding the main window's
@@ -7946,6 +7961,9 @@ app.whenReady().then(() => {
     // behind > 0. The first tick is delayed so it can't race first-launch
     // bootstrap/pairing; an unsupported or failed check (offline, non-git install)
     // clears the line rather than nagging with stale truth.
+    // Shared with the widget's ⬆ button via ipcMain 'hermes:sara:applyUpdate'.
+    globalThis.__saraApplyUpdate = () => applySaraUpdateFromTray()
+
     async function applySaraUpdateFromTray() {
       const picked = dialog.showMessageBoxSync({
         type: 'question',
@@ -7975,7 +7993,13 @@ app.whenReady().then(() => {
       checkUpdates()
         .then((r) => {
           const behind = r && r.supported && !r.error ? Number(r.behind) || 0 : 0
-          if (saraStore) saraStore.setUpdateBehind(behind)
+          if (saraStore) {
+            // The widget renders "update available" against the version actually
+            // installed — an update prompt with nothing to compare it to is a
+            // nag, not information.
+            saraStore.setVersion(app.getVersion())
+            saraStore.setUpdateBehind(behind)
+          }
           if (behind > 0) console.log(`[sara] update available: ${behind} behind ${r.branch}`)
         })
         .catch((e) => console.error('[sara] update check failed:', (e && e.message) || e))

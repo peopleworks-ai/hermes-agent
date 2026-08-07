@@ -48,6 +48,7 @@ const DEFAULT_STATE = Object.freeze({
   repairing: false, // connector truth: the engine installer is running (claims paused)
   repairProgress: '', // one-line installer progress from main.cjs, for the widget card
   updateBehind: 0, // main.cjs truth (checkUpdates): commits behind the release branch; 0 = current
+  version: '', // app.getVersion(), set once at init — the widget shows what is installed
 })
 
 const NO_WATCH = { screen: false, voice: false }
@@ -344,6 +345,16 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
 
   // Mirrored from main.cjs's periodic checkUpdates() — like `recording`, the UI renders it,
   // never asserts it. 0 clears the tray line; applying an update exits the process anyway.
+  // Set once at init from app.getVersion(). The widget shows the installed
+  // version next to the update line, so "update available" can be read against
+  // something concrete instead of asking the user to go hunting.
+  function setVersion(v) {
+    const version = String(v || '')
+    if (version === state.version) return
+    state = { ...state, version }
+    emit()
+  }
+
   function setUpdateBehind(n) {
     const updateBehind = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
     if (updateBehind === state.updateBehind) return
@@ -415,6 +426,7 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     setPaired,
     setIdentity,
     setUpdateBehind,
+    setVersion,
     setRepairProgress,
     syncRecording,
     hydrateFromConnector,
