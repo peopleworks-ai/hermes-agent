@@ -53,6 +53,100 @@ function hermesBin() {
   }
 }
 
+// Same shape for HERMES_HOME. main.cjs already resolves it (env → Windows user
+// registry → %LOCALAPPDATA%\hermes), and duplicating that logic here is how the
+// two drift apart, so it injects the resolved value instead.
+let homeResolver = () => process.env.HERMES_HOME || null
+function setHomeResolver(fn) {
+  if (typeof fn === 'function') homeResolver = fn
+}
+function hermesHome() {
+  try {
+    return homeResolver() || null
+  } catch {
+    return null
+  }
+}
+
+// ── Per-conversation context bundle ──────────────────────────────────────────
+// A step used to arrive with its instruction and nothing else: no transcript, no
+// SOP. The server can now hand over both, but only a SKILL PACK is reachable —
+// CHROME_TOOLSETS below deliberately withholds `file` and `terminal`, so
+// skill_view (which reads under HERMES_HOME/skills) is the agent's only door to
+// a file. Hence: write the bundle as a skill pack, and point the spawn's cwd at
+// it so Hermes's own AGENTS.md injection picks up the small always-on tier.
+const BUNDLE_ROOT = 'conversations'
+const BUNDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function bundleDir(conversation) {
+  const home = hermesHome()
+  if (!home || !conversation) return null
+  // Names come from the server (SARAH-CONV-2026-#####); keep only characters that
+  // cannot climb out of the skills directory.
+  const safe = String(conversation).replace(/[^A-Za-z0-9._-]/g, '')
+  if (!safe) return null
+  return path.join(home, 'skills', BUNDLE_ROOT, `conv-${safe}`)
+}
+
+/** Materialise a conversation's bundle; returns its directory, or null.
+ *  Best-effort by contract — a bundle that will not download must never stop
+ *  the task it was meant to help. */
+async function syncConversationBundle(conversation) {
+  const dir = bundleDir(conversation)
+  if (!dir) return null
+  try {
+    const stamp = path.join(dir, '.bundle-hash')
+    let have = ''
+    try {
+      have = fs.readFileSync(stamp, 'utf8').trim()
+    } catch {
+      /* first time */
+    }
+    const b = await hcos('hros.api.desktop_context.get_conversation_bundle', { conversation })
+    if (!b || !Array.isArray(b.files) || !b.files.length) return null
+    if (b.hash && b.hash === have) {
+      fs.utimesSync(dir, new Date(), new Date()) // keep it out of the pruner
+      return dir
+    }
+    for (const f of b.files) {
+      // Server-authored relative paths (SKILL.md, references/…). Resolve and
+      // confirm the result is still inside the bundle before writing.
+      const dest = path.resolve(dir, String(f.path || ''))
+      if (dest !== dir && !dest.startsWith(dir + path.sep)) continue
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, String(f.content ?? ''), 'utf8')
+    }
+    fs.writeFileSync(stamp, String(b.hash || ''), 'utf8')
+    console.log(`[sara] context bundle ready: ${dir} (${b.files.length} files)`)
+    return dir
+  } catch (e) {
+    console.error('[sara] context bundle failed (continuing without it):', (e && e.message) || e)
+    return null
+  }
+}
+
+/** Drop bundles nobody has touched in a week. */
+function pruneConversationBundles() {
+  const home = hermesHome()
+  if (!home) return
+  const root = path.join(home, 'skills', BUNDLE_ROOT)
+  let names = []
+  try {
+    names = fs.readdirSync(root)
+  } catch {
+    return
+  }
+  const cutoff = Date.now() - BUNDLE_TTL_MS
+  for (const n of names) {
+    const p = path.join(root, n)
+    try {
+      if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { recursive: true, force: true })
+    } catch {
+      /* leave it */
+    }
+  }
+}
+
 // Engine-health latch (same shape as authBad): set when the Hermes CLI is missing or a spawn
 // resolved to the app itself; cleared by any successful probe/run. main.cjs subscribes via
 // onEngineBroken to trigger auto-repair; the widget + tray render it via getIdentity(). Without
@@ -505,7 +599,7 @@ function hermesChatArgs(prompt) {
 
 // Run via `hermes chat -q` (shows tool activity, unlike the silent `-z`) and
 // stream the tool lines out via onProgress so the Sarä chat shows live steps.
-function runHermes(prompt, onProgress) {
+function runHermes(prompt, onProgress, cwd) {
   return new Promise((resolve) => {
     let out = '',
       err = ''
@@ -542,7 +636,10 @@ function runHermes(prompt, onProgress) {
       })
     }
     try {
-      child = spawn(bin, hermesChatArgs(prompt), { windowsHide: true })
+      // cwd = the conversation's bundle folder when there is one. Hermes reads
+      // AGENTS.md from its working directory; the connector never set a cwd, so
+      // that injection has never once fired.
+      child = spawn(bin, hermesChatArgs(prompt), { windowsHide: true, ...(cwd ? { cwd } : {}) })
     } catch (e) {
       noteEngineBroken('missing')
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
@@ -618,6 +715,9 @@ async function pollOnce() {
       const entry = { name: task.name, label: task.prompt || '(task)' }
       state.running.push(entry)
       console.log(`[sara] claimed ${task.name}: ${String(task.prompt).slice(0, 80)}`)
+      // Pull this conversation's transcript + SOPs before executing. Best-effort:
+      // a missing bundle degrades to exactly today's behaviour.
+      const ctxDir = task.conversation ? await syncConversationBundle(task.conversation) : null
       const { result, error } = await runHermes(task.prompt || '', (step) => {
         // Stream each tool step as an event → the Sarä chat renders live cards.
         console.log('[sara] step:', step)
@@ -625,7 +725,7 @@ async function pollOnce() {
           name: task.name,
           event: JSON.stringify({ type: 'tool', text: step }),
         }).catch(() => {})
-      })
+      }, ctxDir)
       await hcos(`${TASK_API}.complete_task`, { name: task.name, result, error })
       state.running = state.running.filter((r) => r.name !== task.name)
       console.log(`[sara] done ${task.name}: ${error ? 'ERROR ' + error : String(result).slice(0, 100)}`)
@@ -772,6 +872,11 @@ function start(dir, onPaired) {
   ensureHermesConfig()
   if (!pollTimer) pollTimer = setInterval(pollOnce, POLL_MS)
   resumeWatchIfEnabled()
+  try {
+    pruneConversationBundles()
+  } catch {
+    /* best-effort */
+  }
   // Async — tasks spawning before it resolves run ungated (safe: full toolset), and Chrome mode
   // starts restricting once it lands. Never blocks boot.
   probeToolsets().catch(() => {})
@@ -798,6 +903,12 @@ function setPaused(p) {
 module.exports = {
   start,
   stop,
+  setHomeResolver,
+  // Exported for apps/desktop/electron/sara-bundle.test.cjs — the path-escape
+  // guard and the hash short-circuit are the parts worth a regression test.
+  syncConversationBundle,
+  bundleDir,
+  pruneConversationBundles,
   getCurrentWork,
   isPaired,
   setPaused,

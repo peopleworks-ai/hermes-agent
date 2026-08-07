@@ -7832,6 +7832,13 @@ app.whenReady().then(() => {
     // searches this app's own directory before PATH and finds Hermes.exe — a bare name is
     // guaranteed to relaunch the app instead of running a task.
     const bootHermesBin = process.env.HERMES_BIN || null
+    // HERMES_HOME is already resolved up top (env → Windows user registry →
+    // %LOCALAPPDATA%\hermes). Hand it over rather than let the connector work it
+    // out again — two copies of that logic is how they drift apart.
+    if (typeof saraConn.setHomeResolver === 'function') {
+      saraConn.setHomeResolver(() => HERMES_HOME)
+    }
+
     saraConn.setBinResolver(() => {
       if (bootHermesBin) return bootHermesBin
       try {
