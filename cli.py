@@ -12409,6 +12409,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             sys.stdout.flush()
             time.sleep(0.15)
 
+            # Record whether this turn actually succeeded, so a non-interactive
+            # caller can exit non-zero.
+            #
+            # The machine-readable `-Q` path already does this: it calls
+            # run_conversation directly and sys.exit(1) on result["failed"]. The
+            # human-facing `-q` path — the one Sarä Desktop's connector uses —
+            # went through chat(), which swallowed the result and returned only
+            # the text, so hermes exited 0 after ABORTING a run. The connector
+            # reads exit 0 as success and the task reported Done over work that
+            # never happened (2026-08-07: a provider 400 produced an empty Google
+            # Doc and a green tick).
+            self._last_turn_failed = bool(
+                result and (result.get("failed") or result.get("partial"))
+            )
+
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
@@ -16114,6 +16129,16 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary()
+                # Same 0/1 contract the -Q path above honours. Without it this
+                # branch always exited 0, so a run that ABORTED — provider 4xx,
+                # non-retryable error, anything that never reached the work —
+                # looked identical to a run that succeeded. Every wrapper above
+                # (Sarä Desktop's connector reads `code !== 0`) then reported a
+                # green tick for nothing.
+                # sys.exit raises SystemExit, so the `finally` below still runs
+                # _finalize_single_query — no need to call it here.
+                if getattr(cli, "_last_turn_failed", False):
+                    sys.exit(1)
         finally:
             _finalize_single_query(cli)
         return
