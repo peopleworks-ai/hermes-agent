@@ -7917,6 +7917,12 @@ app.whenReady().then(() => {
       dialogs: saraDialogs,
       webAppUrl: SARA_WEB_APP_URL,
     })
+    // The installed version is known NOW and never changes while the process
+    // lives. It was being set inside the update-check .then(), which meant the
+    // footer showed "v—" for the first 90 seconds and FOREVER on any machine
+    // where the check fails (offline, or not a git checkout) — a static fact
+    // made conditional on a network call.
+    saraStore.setVersion(app.getVersion())
     saraStore.hydrateFromConnector() // ← adopts the connector's persisted watch as the truth
     saraStore.startCurrentWorkPoll(8000) // one poll now feeds BOTH surfaces
     saraStore.subscribe(broadcastSaraState) // widget window updates by push, never by polling
@@ -7993,13 +7999,10 @@ app.whenReady().then(() => {
       checkUpdates()
         .then((r) => {
           const behind = r && r.supported && !r.error ? Number(r.behind) || 0 : 0
-          if (saraStore) {
-            // The widget renders "update available" against the version actually
-            // installed — an update prompt with nothing to compare it to is a
-            // nag, not information.
-            saraStore.setVersion(app.getVersion())
-            saraStore.setUpdateBehind(behind)
-          }
+          // Version is set once at store creation, not here: it cannot change
+          // while the process runs, and tying it to this call is what left the
+          // footer blank when the check failed.
+          if (saraStore) saraStore.setUpdateBehind(behind)
           if (behind > 0) console.log(`[sara] update available: ${behind} behind ${r.branch}`)
         })
         .catch((e) => console.error('[sara] update check failed:', (e && e.message) || e))
