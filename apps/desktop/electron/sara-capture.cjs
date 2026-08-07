@@ -10,11 +10,23 @@
  *
  * VOICE is Slice 4 (a hidden renderer running getUserMedia → MediaRecorder).
  *
+ * MEMORY: a kept frame is written straight to a temp file and uploaded as soon
+ * as it lands — the JPEG buffer is never retained. The previous version pushed
+ * the encoded Buffer into `frames` and only flushed every 15 min, so up to
+ * 50 full screenshots (tens of MB on a dense 1600px screen) sat in the
+ * main process continuously. Only {ts, app, title, ocrText, file} is held now.
+ *
+ * A frame whose upload fails keeps its temp file and is retried on the next
+ * tick, so a network blip costs latency rather than the screenshot.
+ *
  * Everything is best-effort: a failing OCR / active-win / upload logs and
  * continues; it never throws into the widget. Ports the proven logic from
  * apps/hros/omi-desktop-client/patched-files/src/main/ipc/screenActivityUploader.ts.
  */
 const { desktopCapturer, screen: elScreen } = require('electron')
+const fsp = require('node:fs/promises')
+const os = require('node:os')
+const path = require('node:path')
 // Omi's native Windows OCR + window-info engine (extracted, MIT) — replaces
 // tesseract.js + active-win. One long-running win-ocr-helper.exe subprocess.
 const { helperProcess } = require('./ocr/helperProcess.cjs')
@@ -24,19 +36,28 @@ const { helperProcess } = require('./ocr/helperProcess.cjs')
 // step granularity a step-by-step SOP needs, instead of 1 blurry frame/minute.
 const POLL_MS = 2500 // sample the screen every 2.5s (cheap: just a hash)
 const BATCH_MS = 15 * 60 * 1000
-const MAX_FRAMES = 50 // frames kept per batch; the server samples these down for vision
 const MAX_GAP_MS = 120 * 1000 // cap a frame's attributed active-seconds (idle guard)
 const CHANGE_THRESHOLD = 12 // aHash Hamming distance (of 256) that counts as a new step
 const HEARTBEAT_MS = 3 * 60 * 1000 // keep ≥1 frame every 3 min even when nothing changes
+// Server refuses past MAX_FRAMES_PER_SESSION = 60 (hros/api/omi_screen.py); roll
+// to a fresh session before that rather than letting uploads start failing.
+const MAX_FRAMES_PER_SESSION = 50
+// Bound on UNUPLOADED frames on disk, for the case where the server is
+// unreachable for a long stretch. ~0.5 MB each, so ~100 MB worst case.
+const MAX_PENDING = 200
+const TMP_DIR = path.join(os.tmpdir(), 'sara-capture')
 
 let cfg = null // { deviceId, base, key, secret, screen, voice }
 let snapTimer = null
 let flushTimer = null
 let firstFlushTimer = null
-let frames = []
-let flushing = false
+let pending = [] // [{ ts, app, windowTitle, ocrText, file }] — paths, never buffers
+let session = null // { name, count, seen: [{ ts, app }] }
+let draining = false
+let seq = 0
 let lastHash = null
 let lastKeptTs = 0
+let droppedPending = 0
 
 function fmtDt(ms) {
   const d = new Date(ms)
@@ -94,9 +115,28 @@ async function snapOnce() {
     const win = await helperProcess.windowInfo() // { app, title } (native)
     const res = await helperProcess.ocr(jpeg) // { ok, fullText } | { ok:false, ... }
     const ocrText = res && res.ok ? (res.fullText || '').replace(/\s+/g, ' ').trim().slice(0, 4000) : ''
-    frames.push({ ts: Date.now(), app: (win && win.app) || '', windowTitle: (win && win.title) || '', ocrText, jpeg })
-    lastKeptTs = Date.now()
-    if (frames.length > MAX_FRAMES) frames = frames.slice(-MAX_FRAMES)
+    // Straight to disk. `jpeg` goes out of scope at the end of this function —
+    // nothing in this module retains an encoded screenshot.
+    const ts = Date.now()
+    const file = path.join(TMP_DIR, `${ts}-${seq++}.jpg`)
+    await fsp.mkdir(TMP_DIR, { recursive: true })
+    await fsp.writeFile(file, jpeg)
+    pending.push({ ts, app: (win && win.app) || '', windowTitle: (win && win.title) || '', ocrText, file })
+    lastKeptTs = ts
+
+    // Disk backstop: only reachable when uploads have been failing for a while.
+    // Say so — a silent drop reads as "we captured everything" when we did not.
+    while (pending.length > MAX_PENDING) {
+      const old = pending.shift()
+      droppedPending++
+      await fsp.unlink(old.file).catch(() => {})
+    }
+    if (droppedPending) {
+      console.warn(`[sara] screen: dropped ${droppedPending} un-uploaded frame(s) — backlog over ${MAX_PENDING}`)
+      droppedPending = 0
+    }
+
+    void drain() // upload now; do not make the caller wait on the network
   } catch (e) {
     console.error('[sara] snap failed:', (e && e.message) || e)
   }
@@ -138,44 +178,100 @@ async function multipartCall(method, form) {
   return j && j.message !== undefined ? j.message : j
 }
 
-async function flush() {
-  if (!cfg || flushing) return
-  const batch = frames.splice(0, MAX_FRAMES)
-  if (!batch.length) return
-  flushing = true
+async function ensureSession(ts) {
+  if (session) return session
+  const res = await jsonCall('hros.api.omi_screen.create_session', {
+    device_id: cfg.deviceId,
+    period_start: fmtDt(ts),
+    period_end: fmtDt(ts),
+  })
+  const name = res && res.session
+  if (!name) throw new Error('create_session returned no session')
+  session = { name, count: 0, seen: [] }
+  return session
+}
+
+/** Close the open session, reporting usage from the frames that actually landed. */
+async function closeSession() {
+  if (!session) return
+  const s = session
+  session = null
+  if (!s.count) return
   try {
-    const session = await jsonCall('hros.api.omi_screen.create_session', {
-      device_id: cfg.deviceId,
-      period_start: fmtDt(batch[0].ts),
-      period_end: fmtDt(batch[batch.length - 1].ts),
+    const { topApps, activeSeconds } = computeUsage(s.seen)
+    await jsonCall('hros.api.omi_screen.finalize_session', {
+      session: s.name,
+      top_apps_json: JSON.stringify(topApps),
+      active_seconds: activeSeconds,
     })
-    const sessionName = session && session.session
-    if (!sessionName) throw new Error('create_session returned no session')
-    for (const f of batch) {
+    console.log(`[sara] screen: finalized ${s.name} (${s.count} frames)`)
+  } catch (e) {
+    console.error('[sara] screen finalize failed:', (e && e.message) || e)
+  }
+}
+
+/**
+ * Upload whatever is waiting on disk, oldest first, one at a time.
+ *
+ * Serialised on `draining` so the snap timer firing mid-upload cannot start a
+ * second pass over the same files. A frame is unlinked only after the server
+ * has taken it; on failure we stop and keep the file for the next tick, which
+ * is why a dropped connection costs latency instead of the screenshot.
+ */
+async function drain() {
+  if (!cfg || draining) return
+  draining = true
+  try {
+    while (pending.length) {
+      const f = pending[0]
+      let bytes
       try {
+        bytes = await fsp.readFile(f.file)
+      } catch {
+        pending.shift() // file vanished (temp cleaner, disk full) — nothing to send
+        continue
+      }
+      try {
+        const s = await ensureSession(f.ts)
         const form = new FormData()
-        form.append('session', sessionName)
+        form.append('session', s.name)
         form.append('captured_at', fmtDt(f.ts))
         form.append('app', f.app || '')
         form.append('window_title', f.windowTitle || '')
         form.append('ocr_text', f.ocrText || '')
-        form.append('file', new Blob([f.jpeg], { type: 'image/jpeg' }), 'frame.jpg')
+        form.append('file', new Blob([bytes], { type: 'image/jpeg' }), 'frame.jpg')
         await multipartCall('hros.api.omi_screen.upload_frame', form)
+        s.count++
+        s.seen.push({ ts: f.ts, app: f.app })
+        pending.shift()
+        await fsp.unlink(f.file).catch(() => {})
+        // Roll before the server's own per-session ceiling rejects us.
+        if (s.count >= MAX_FRAMES_PER_SESSION) await closeSession()
       } catch (e) {
-        console.error('[sara] frame upload failed:', (e && e.message) || e)
+        console.error('[sara] frame upload failed, will retry:', (e && e.message) || e)
+        break // keep the file; try again on the next tick
       }
     }
-    const { topApps, activeSeconds } = computeUsage(batch)
-    await jsonCall('hros.api.omi_screen.finalize_session', {
-      session: sessionName,
-      top_apps_json: JSON.stringify(topApps),
-      active_seconds: activeSeconds,
-    })
-    console.log(`[sara] screen: uploaded ${batch.length} frames → ${sessionName}`)
-  } catch (e) {
-    console.error('[sara] screen flush failed:', (e && e.message) || e)
   } finally {
-    flushing = false
+    draining = false
+  }
+}
+
+/** Batch boundary: push anything still waiting, then close the window. */
+async function flush() {
+  if (!cfg) return
+  await drain()
+  await closeSession()
+}
+
+/** Orphaned temp files from a previous run have no metadata left, so they can
+ *  never be uploaded — clearing them on start keeps the folder from growing. */
+async function cleanTmp() {
+  try {
+    const files = await fsp.readdir(TMP_DIR)
+    await Promise.all(files.map((n) => fsp.unlink(path.join(TMP_DIR, n)).catch(() => {})))
+  } catch {
+    /* no temp dir yet */
   }
 }
 
@@ -188,13 +284,24 @@ function clearTimers() {
 
 function start(opts) {
   clearTimers() // SYNC reset — never call the async stop() here (it would null the new cfg)
-  frames = []
+  pending = []
+  session = null
+  seq = 0
+  droppedPending = 0
   lastHash = null
   lastKeptTs = 0
   cfg = opts || {}
   if (cfg.screen) {
+    void cleanTmp()
     snapOnce()
-    snapTimer = setInterval(snapOnce, POLL_MS)
+    // drain() on every poll, not only when a frame is kept: an upload backlog
+    // built up while the server was unreachable would otherwise sit untouched
+    // until the next batch boundary if the screen went idle. It is a no-op when
+    // there is nothing pending.
+    snapTimer = setInterval(() => {
+      void snapOnce()
+      void drain()
+    }, POLL_MS)
     // First batch fires early so a session appears within ~2 min (testing);
     // thereafter every 15 min. Overridable via SARA_SCREEN_BATCH_MS.
     const batchMs = Number(process.env.SARA_SCREEN_BATCH_MS) || BATCH_MS
@@ -202,7 +309,7 @@ function start(opts) {
       flush()
       flushTimer = setInterval(flush, batchMs)
     }, 90 * 1000)
-    console.log('[sara] screen capture started (change-driven: poll 2.5s, keep on change; first batch ~90s)')
+    console.log('[sara] screen capture started (change-driven: poll 2.5s, keep on change; upload immediately, session closes every batch)')
   }
   // cfg.voice → Slice 4 (hidden renderer getUserMedia → MediaRecorder). Not yet wired.
 }
@@ -210,11 +317,13 @@ function start(opts) {
 async function stop() {
   clearTimers()
   try {
-    await flush() // upload whatever's buffered before we stop (cfg still set)
+    await flush() // upload what is still on disk, then close the session (cfg still set)
   } catch {
     /* best-effort */
   }
-  frames = []
+  await cleanTmp()
+  pending = []
+  session = null
   try {
     helperProcess.dispose() // stop the win-ocr-helper subprocess
   } catch {}
