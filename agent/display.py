@@ -1384,7 +1384,17 @@ def get_cute_tool_message(
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
     if tool_name == "skill_view":
-        return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
+        # Show WHICH file, not just which pack. The Sarä Desktop task log is scraped
+        # from these lines, so a bare pack name made it impossible to tell a manual
+        # read from a reference read — four consecutive "📚 skill apploye" lines could
+        # be one SKILL.md re-read or four different references, and nobody could prove
+        # which. sara-desktop is 17,648 chars of SKILL.md inside a 112,650-char pack;
+        # "did it actually open the reference?" is the whole question, and this label
+        # was throwing the answer away.
+        _name = args.get("name", "") or ""
+        _fp = args.get("file_path") or ""
+        _label = f"{_name}/{_fp}" if _fp else (_name or "(list)")
+        return _wrap(f"┊ 📚 skill     {_trunc(_label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
