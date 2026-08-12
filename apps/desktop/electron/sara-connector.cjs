@@ -195,6 +195,11 @@ function looksLikeNoProvider(s) {
 // well past 10 min, so kill only after 30. Keep in sync with the server's
 // STALE_MINUTES (a task can't run longer than this ceiling anyway).
 const HTIMEOUT_MS = 1800000
+// Idle ceiling: TOTAL silence (no stdout/stderr bytes at all) for this long =
+// a wedged engine, not a long task — long tasks stream tool markers and LLM
+// retries constantly. Distinct from HTIMEOUT_MS: that caps a NOISY run's total
+// time; this frees the single-lane queue from a silent hang in minutes.
+const IDLE_MS = 600000
 const LLM_METHOD = 'hros.api.llm_proxy.anthropic_messages'
 const TASK_API = 'hros.api.sarah_desktop'
 
@@ -652,12 +657,35 @@ function runHermes(prompt, onProgress, cwd) {
       } catch {}
       resolve({ error: `hermes timed out after ${HTIMEOUT_MS / 1000}s` })
     }, HTIMEOUT_MS)
+    // Idle watchdog: a HEALTHY run prints something (tool markers, retries,
+    // stream chunks) well within minutes; total silence means the engine is
+    // wedged. Killing at IDLE_MS instead of waiting out HTIMEOUT_MS matters
+    // because the connector is single-lane — a silent hang used to block every
+    // queued checkpoint behind it for the full 30 minutes (2026-08-12 jam).
+    // The timer resets on ANY byte from stdout or stderr.
+    let idleTimer = null
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => {
+        try {
+          child.kill()
+        } catch {}
+        resolve({
+          error:
+            `hermes timed out after ${IDLE_MS / 1000}s of silence — the run produced no ` +
+            `output at all in that window, so it was stopped to keep the task queue moving`,
+        })
+      }, IDLE_MS)
+    }
+    armIdle()
     child.stdout.on('data', (d) => {
       out += d
+      armIdle()
       scanOut(d.toString('utf8'))
     })
     child.stderr.on('data', (d) => {
       err += d
+      armIdle()
       scanErr(d.toString('utf8'))
     })
     child.on('error', (e) => {
