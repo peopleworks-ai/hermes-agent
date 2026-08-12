@@ -31,6 +31,10 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.skill_refs_nudge import (
+    note_skill_view as _note_skill_view,
+    reminder_for as _skill_refs_reminder,
+)
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -926,6 +930,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             else:
                 function_result += subdir_hints
 
+        # ── Skill references backstop ────────────────────────────────
+        # A skill_view(name) with unread references arms a pending state;
+        # the first acting tool that follows gets a one-time reminder
+        # appended so the model turns back and reads them.
+        if name == "skill_view":
+            _note_skill_view(agent, args, function_result)
+        elif isinstance(function_result, str):
+            _refs_reminder = _skill_refs_reminder(agent, name)
+            if _refs_reminder:
+                function_result += _refs_reminder
+
         # Unwrap _multimodal dicts to an OpenAI-style content list so any
         # vision-capable provider receives [{type:text},{type:image_url}]
         # rather than a raw Python dict.  The Anthropic adapter already
@@ -1580,6 +1595,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        # ── Skill references backstop ────────────────────────────────
+        # Mirror of the parallel path: arm on skill_view(name), remind once
+        # on the first acting tool that follows without a reference read.
+        if function_name == "skill_view":
+            _note_skill_view(agent, function_args, function_result)
+        elif isinstance(function_result, str):
+            _refs_reminder = _skill_refs_reminder(agent, function_name)
+            if _refs_reminder:
+                function_result += _refs_reminder
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.

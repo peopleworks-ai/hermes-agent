@@ -1473,7 +1473,7 @@ def skill_view(
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
+            "usage_hint": "REQUIRED before acting on this skill: pick the reference(s) in linked_files that match the task and read each IN FULL with skill_view(name, file_path), e.g. skill_view(name, file_path='references/api.md'). SKILL.md is a router — do not act from its summary alone."
             if linked_files
             else None,
             "required_environment_variables": required_env_vars,
