@@ -39,7 +39,8 @@ const DEFAULT_STATE = Object.freeze({
   learning: 'off',
   watch: { screen: false, voice: false }, // meaningful only while learning === 'watch'
   recording: false, // connector truth — the UI mirrors it, never sets it
-  currentWork: [],
+  currentWork: [], // [{name, label}] — the in-flight task(s); name powers the Cancel button
+  queuedWork: [], // [{name, label, creation}] — server-side Queued rows waiting their turn
   paired: false,
   account: '', // WHOSE account this app is paired to ("Connected as …"); '' until known
   authBad: false, // connector truth: token exists but the server rejects it (401)
@@ -308,13 +309,27 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     emit()
   }
 
+  // Items carry {name, label} now — compare BOTH, or a name-only change (same
+  // label, different task) would be swallowed and the Cancel button would
+  // target the previous task.
+  function _sameWorkList(a, b) {
+    return (
+      a.length === b.length &&
+      a.every((it, i) => it && b[i] && it.label === b[i].label && it.name === b[i].name)
+    )
+  }
+
   function setCurrentWork(items) {
     const next = Array.isArray(items) ? items : []
-    const same =
-      next.length === state.currentWork.length &&
-      next.every((it, i) => it && state.currentWork[i] && it.label === state.currentWork[i].label)
-    if (same) return
+    if (_sameWorkList(next, state.currentWork)) return
     state = { ...state, currentWork: next }
+    emit()
+  }
+
+  function setQueuedWork(items) {
+    const next = Array.isArray(items) ? items : []
+    if (_sameWorkList(next, state.queuedWork)) return
+    state = { ...state, queuedWork: next }
     emit()
   }
 
@@ -396,6 +411,12 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
         setCurrentWork(items)
         setPaired(connector.isPaired())
         if (typeof connector.getIdentity === 'function') setIdentity(connector.getIdentity())
+        if (typeof connector.getQueuedWork === 'function') {
+          // Server round-trip (one cheap owner-scoped query) — the "Work in
+          // Queue" card. getQueuedWork returns [] on any failure, so a blip
+          // empties the card rather than erroring the widget.
+          setQueuedWork(await connector.getQueuedWork())
+        }
       } catch {
         /* keep the last known list rather than blanking it on a transient error */
       }
@@ -403,6 +424,24 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     tick()
     pollTimer = setInterval(tick, intervalMs)
     return pollTimer
+  }
+
+  /** Widget Batal → connector (local kill or server cancel), then refresh both
+   *  lists immediately so the row disappears without waiting for the next tick. */
+  async function cancelWork(name) {
+    let out = { ok: false }
+    try {
+      out = (await connector.cancelWork(name)) || { ok: false }
+    } catch {
+      out = { ok: false }
+    }
+    try {
+      setCurrentWork(await connector.getCurrentWork())
+      if (typeof connector.getQueuedWork === 'function') {
+        setQueuedWork(await connector.getQueuedWork())
+      }
+    } catch {}
+    return out
   }
 
   function stopCurrentWorkPoll() {
@@ -423,6 +462,8 @@ function createSaraStore({ connector, chrome, dialogs, webAppUrl = '' } = {}) {
     setWorkspace,
     setLearning,
     setCurrentWork,
+    setQueuedWork,
+    cancelWork,
     setPaired,
     setIdentity,
     setUpdateBehind,

@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // The widget's "Baiki enjin Sarä" button; auto-repair uses the same path in main.
     repairEngine: () => ipcRenderer.invoke('hermes:sara:repairEngine'),
     applyUpdate: () => ipcRenderer.invoke('hermes:sara:applyUpdate'),
+    // Batal on a Current Work / Work in Queue row. Resolves with the settled
+    // state (same contract as setWorkspace) after both lists are refreshed.
+    cancelWork: name => ipcRenderer.invoke('hermes:sara:cancelWork', name),
     quit: () => ipcRenderer.invoke('hermes:sara:quit'),
     // Live push from the store — the widget never polls.
     onState: callback => {

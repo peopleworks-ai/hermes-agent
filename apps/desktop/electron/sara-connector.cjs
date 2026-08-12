@@ -606,7 +606,14 @@ function hermesChatArgs(prompt) {
 
 // Run via `hermes chat -q` (shows tool activity, unlike the silent `-z`) and
 // stream the tool lines out via onProgress so the Sarä chat shows live steps.
-function runHermes(prompt, onProgress, cwd) {
+// The one in-flight hermes run, exposed so the widget's Cancel button can kill
+// it. The child handle used to live only inside runHermes's closure — nothing
+// outside could stop a run short of its own timeouts.
+let currentChild = null
+let currentTaskName = null
+let cancelRequested = false
+
+function runHermes(prompt, onProgress, cwd, taskName) {
   return new Promise((resolve) => {
     let out = '',
       err = ''
@@ -651,6 +658,9 @@ function runHermes(prompt, onProgress, cwd) {
       noteEngineBroken('missing')
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
     }
+    currentChild = child
+    currentTaskName = taskName || null
+    cancelRequested = false
     const t = setTimeout(() => {
       try {
         child.kill()
@@ -690,11 +700,25 @@ function runHermes(prompt, onProgress, cwd) {
     })
     child.on('error', (e) => {
       clearTimeout(t)
+      currentChild = null
+      currentTaskName = null
       noteEngineBroken('missing') // ENOENT: the resolved path vanished mid-flight
       resolve({ error: `hermes not found (${bin}): ${(e && e.message) || e}` })
     })
     child.on('close', (code) => {
       clearTimeout(t)
+      currentChild = null
+      currentTaskName = null
+      // User pressed Batal on the widget: the kill is deliberate, so it MUST
+      // resolve with the cancel token — falling through would report the kill
+      // signal's non-zero exit as a generic engine failure. Token in lockstep
+      // with the server's _humanize_desktop_error ("Dibatalkan oleh anda…").
+      if (cancelRequested) {
+        cancelRequested = false
+        return resolve({
+          error: 'SARA_CANCELLED_BY_USER: user pressed Cancel on the Sarä Desktop widget',
+        })
+      }
       // HERMES mis-resolved to THIS app (a PATH shim relaunched us): the 2nd instance printed its
       // boot banner and single-instance-exited 0 without running anything. Fail loudly — a fake
       // "success" here is exactly what let an empty task show a green ✓. With the per-spawn
@@ -764,7 +788,7 @@ async function pollOnce() {
           name: task.name,
           event: JSON.stringify({ type: 'tool', text: step }),
         }).catch(() => {})
-      }, ctxDir)
+      }, ctxDir, task.name)
       await hcos(`${TASK_API}.complete_task`, { name: task.name, result, error })
       state.running = state.running.filter((r) => r.name !== task.name)
       console.log(`[sara] done ${task.name}: ${error ? 'ERROR ' + error : String(result).slice(0, 100)}`)
@@ -947,7 +971,49 @@ function stop() {
   } catch {}
 }
 function getCurrentWork() {
-  return state.running.map((r) => ({ label: r.label }))
+  // `name` rides along so the widget's Cancel button can say WHICH task —
+  // label-only items made the running list unactionable.
+  return state.running.map((r) => ({ name: r.name, label: r.label }))
+}
+async function getQueuedWork() {
+  // The server-side queue (Queued rows waiting for this laptop's single lane),
+  // dispatch order. Best-effort: an offline moment renders as an empty queue,
+  // never an error state.
+  if (!isPaired()) return []
+  try {
+    const rows = await hcos(`${TASK_API}.list_my_queue`, {})
+    state.authBad = false
+    return (Array.isArray(rows) ? rows : [])
+      .filter((r) => r && r.status === 'Queued')
+      .map((r) => ({ name: r.name, label: r.label || '(task)', creation: r.creation || '' }))
+  } catch (e) {
+    if (e.status === 401) state.authBad = true
+    return []
+  }
+}
+async function cancelWork(name) {
+  if (!name) return { ok: false, reason: 'no task name' }
+  // The running task's hermes child lives HERE — kill it locally. pollOnce's
+  // normal completion path then reports the SARA_CANCELLED_BY_USER token to
+  // complete_task, which paints the amber "Dibatalkan oleh anda" + Retry card.
+  if (currentTaskName === name && currentChild) {
+    cancelRequested = true
+    try {
+      currentChild.kill()
+    } catch {}
+    console.log(`[sara] cancel (running): ${name}`)
+    return { ok: true, where: 'laptop' }
+  }
+  // Not running here → a Queued row on the server; cancel it before it starts.
+  try {
+    const r = await hcos(`${TASK_API}.cancel_task`, { name })
+    state.authBad = false
+    console.log(`[sara] cancel (queued): ${name} →`, r && r.ok)
+    return r || { ok: false }
+  } catch (e) {
+    if (e.status === 401) state.authBad = true
+    return { ok: false, reason: (e && e.message) || String(e) }
+  }
 }
 function setPaused(p) {
   state.paused = !!p
@@ -964,6 +1030,8 @@ module.exports = {
   bundleDir,
   pruneConversationBundles,
   getCurrentWork,
+  getQueuedWork, // server-side Queued rows → the widget's "Work in Queue" card
+  cancelWork, // widget Batal: kill the running child, or cancel a Queued row server-side
   isPaired,
   setPaused,
   startWatch,

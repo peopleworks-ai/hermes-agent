@@ -72,6 +72,10 @@ function initSaraTray(app, opts = {}) {
     const cw = s.currentWork.length
       ? s.currentWork.map((w) => ({ label: `▸ ${w.label}`, enabled: false }))
       : [{ label: 'Nothing running', enabled: false }]
+    // Count only — cancel buttons live in the popup widget, not a tray menu.
+    if ((s.queuedWork || []).length) {
+      cw.push({ label: `⏳ ${s.queuedWork.length} dalam giliran`, enabled: false })
+    }
 
     // The watching line is driven by `recording` (connector truth), NOT by the radio. Armed but not
     // yet capturing is a real state (the async resume, or a failed one) and it must not show as a

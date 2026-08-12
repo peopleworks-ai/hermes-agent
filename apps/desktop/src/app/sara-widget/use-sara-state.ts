@@ -70,5 +70,12 @@ export function useSaraState() {
     void window.hermesDesktop?.sara?.applyUpdate()
   }, [])
 
-  return { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, applyUpdate, quit }
+  const cancelWork = useCallback(async (name: string) => {
+    // Settled-state contract, like setWorkspace: main cancels (local kill or
+    // server-side), refreshes both work lists, and returns the truth.
+    const next = await window.hermesDesktop?.sara?.cancelWork(name)
+    if (next) setState(next)
+  }, [])
+
+  return { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, applyUpdate, cancelWork, quit }
 }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
 import {
@@ -104,8 +104,34 @@ function StatusPill({ state }: { state: SaraWidgetState }) {
   )
 }
 
+/** "3 min" / "2 j" queue age — compact, best-effort (blank on unparseable). */
+function queueAge(creation?: string): string {
+  if (!creation) return ''
+  const t = new Date(creation.replace(' ', 'T')).getTime()
+  if (!Number.isFinite(t)) return ''
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000))
+  if (mins < 1) return 'baru'
+  if (mins < 60) return `${mins} min`
+  return `${Math.round(mins / 60)} j`
+}
+
 export function SaraWidgetApp() {
-  const { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, applyUpdate, quit } = useSaraState()
+  const { state, setWorkspace, setLearning, openWebApp, openSetup, repairEngine, applyUpdate, cancelWork, quit } =
+    useSaraState()
+  // Per-row busy latch so a double-click can't fire two cancels; the row itself
+  // disappears when the settled state lands, which also clears the latch.
+  const [cancelling, setCancelling] = useState<Record<string, boolean>>({})
+  const onCancel = (name?: string) => {
+    if (!name || cancelling[name]) return
+    setCancelling(prev => ({ ...prev, [name]: true }))
+    void cancelWork(name).finally(() => {
+      setCancelling(prev => {
+        const next = { ...prev }
+        delete next[name]
+        return next
+      })
+    })
+  }
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -200,9 +226,20 @@ export function SaraWidgetApp() {
               ) : (
                 <ul className="space-y-1">
                   {state.currentWork.map((w, i) => (
-                    <li className="flex items-start gap-2 text-xs" key={`${w.label}-${i}`}>
+                    <li className="flex items-start gap-2 text-xs" key={w.name || `${w.label}-${i}`}>
                       <span className="mt-1 size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
-                      <span className="min-w-0 truncate text-foreground">{w.label}</span>
+                      <span className="min-w-0 flex-1 truncate text-foreground">{w.label}</span>
+                      {w.name ? (
+                        <button
+                          className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[0.625rem] font-medium text-muted-foreground hover:border-red-400 hover:text-red-600 disabled:opacity-50"
+                          disabled={!!cancelling[w.name]}
+                          onClick={() => onCancel(w.name)}
+                          title="Hentikan tugasan ini sekarang"
+                          type="button"
+                        >
+                          {cancelling[w.name] ? 'Membatal…' : 'Batal'}
+                        </button>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -216,6 +253,36 @@ export function SaraWidgetApp() {
             </>
           )}
         </WidgetCard>
+
+        {/* Only rendered when something is actually waiting — an empty queue card is noise.
+            ✕ cancels a task BEFORE it starts (server-side); the running one has its own Batal. */}
+        {state.queuedWork.length > 0 ? (
+          <WidgetCard title="Work in Queue">
+            <ul className="space-y-1">
+              {state.queuedWork.map(q => (
+                <li className="flex items-start gap-2 text-xs" key={q.name}>
+                  <span className="mt-1 size-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
+                  <span className="min-w-0 flex-1 truncate text-foreground">{q.label}</span>
+                  {queueAge(q.creation) ? (
+                    <span className="shrink-0 text-[0.625rem] text-muted-foreground">
+                      {queueAge(q.creation)}
+                    </span>
+                  ) : null}
+                  <button
+                    aria-label="Batal tugasan ini"
+                    className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[0.625rem] font-medium text-muted-foreground hover:border-red-400 hover:text-red-600 disabled:opacity-50"
+                    disabled={!!cancelling[q.name]}
+                    onClick={() => onCancel(q.name)}
+                    title="Batal sebelum ia mula"
+                    type="button"
+                  >
+                    {cancelling[q.name] ? '…' : '✕'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </WidgetCard>
+        ) : null}
 
         <WidgetCard title="Sarä Workspace">
           <div className="space-y-0.5" role="radiogroup">

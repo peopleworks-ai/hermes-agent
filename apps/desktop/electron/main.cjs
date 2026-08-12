@@ -6240,7 +6240,7 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
 // cancelled dialog resolves with the state unchanged and the renderer never has to guess — it never
 // shows an optimistic segment it then has to unwind. Live updates arrive by push
 // (hermes:sara:state), not polling; see broadcastSaraState.
-const SARA_DEFAULT_STATE = { workspace: 'chrome', learning: 'off', watch: { screen: false, voice: false }, recording: false, currentWork: [], paired: false, gated: false }
+const SARA_DEFAULT_STATE = { workspace: 'chrome', learning: 'off', watch: { screen: false, voice: false }, recording: false, currentWork: [], queuedWork: [], paired: false, gated: false }
 
 ipcMain.handle('hermes:sara:get', async () => (saraStore ? saraStore.getState() : SARA_DEFAULT_STATE))
 
@@ -6260,6 +6260,14 @@ ipcMain.handle('hermes:sara:setLearning', async (event, mode) => {
 ipcMain.handle('hermes:sara:openSetup', async () => {
   require('./sara-dialogs.cjs').openExternal(SARA_SETUP_URL)
   return { ok: true }
+})
+
+ipcMain.handle('hermes:sara:cancelWork', async (_event, name) => {
+  if (!saraStore) return SARA_DEFAULT_STATE
+  await saraStore.cancelWork(String(name || ''))
+  // Same contract as setWorkspace/setLearning: resolve with the settled state
+  // so the widget repaints from truth (both lists already refreshed).
+  return saraStore.getState()
 })
 
 ipcMain.handle('hermes:sara:openWebApp', async () => {

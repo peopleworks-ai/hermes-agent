@@ -26,6 +26,8 @@ declare global {
         /** Re-runs the Hermes engine installer (the "Baiki enjin Sarä" button). */
         repairEngine: () => Promise<{ ok: boolean; busy?: boolean }>
         applyUpdate: () => Promise<{ ok: boolean; error?: string }>
+        /** Batal on a Current Work / Work in Queue row — resolves with the settled state. */
+        cancelWork: (name: string) => Promise<SaraWidgetState>
         quit: () => Promise<{ ok: boolean }>
         /** Live push from the main-process store. Returns an unsubscribe. */
         onState: (callback: (state: SaraWidgetState) => void) => () => void

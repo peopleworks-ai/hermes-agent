@@ -414,3 +414,66 @@ test('store: setUpdateBehind mirrors the update check and notifies views; junk c
   assert.equal(store.getState().updateBehind, 0, 'negative counts clamp to 0 without emitting again')
   assert.equal(notified, 2)
 })
+
+// ── Work lists: name-aware dedupe + queuedWork + cancelWork refresh ──────────
+// The Cancel button targets tasks BY NAME. A dedupe that compares labels only
+// would swallow a same-label/different-task update and leave the button aimed
+// at the previous task — that is the regression these three tests pin down.
+
+test('store: setCurrentWork emits on a NAME change even when the label is identical', () => {
+  const { connector, chrome, dialogs } = makeFakes({})
+  const store = createSaraStore({ connector, chrome, dialogs })
+  let notified = 0
+  store.subscribe(() => (notified += 1))
+
+  store.setCurrentWork([{ name: 'SDT-1', label: 'Buka Indeed' }])
+  assert.equal(notified, 1)
+  assert.equal(store.getState().currentWork[0].name, 'SDT-1')
+
+  store.setCurrentWork([{ name: 'SDT-1', label: 'Buka Indeed' }])
+  assert.equal(notified, 1, 'identical list must not re-emit')
+
+  store.setCurrentWork([{ name: 'SDT-2', label: 'Buka Indeed' }])
+  assert.equal(notified, 2, 'same label, different task — the widget MUST repaint')
+  assert.equal(store.getState().currentWork[0].name, 'SDT-2')
+})
+
+test('store: setQueuedWork mirrors the server queue and dedupes like currentWork', () => {
+  const { connector, chrome, dialogs } = makeFakes({})
+  const store = createSaraStore({ connector, chrome, dialogs })
+  let notified = 0
+  store.subscribe(() => (notified += 1))
+
+  assert.deepEqual(store.getState().queuedWork, [], 'default: empty queue')
+
+  store.setQueuedWork([{ name: 'SDT-9', label: 'Task menunggu', creation: '2026-08-12 13:00:00' }])
+  assert.equal(notified, 1)
+  assert.equal(store.getState().queuedWork.length, 1)
+
+  store.setQueuedWork([{ name: 'SDT-9', label: 'Task menunggu', creation: '2026-08-12 13:00:00' }])
+  assert.equal(notified, 1, 'identical queue must not re-emit')
+
+  store.setQueuedWork([])
+  assert.deepEqual(store.getState().queuedWork, [])
+  assert.equal(notified, 2)
+})
+
+test('store: cancelWork forwards to the connector then refreshes BOTH lists', async () => {
+  const { connector, chrome, dialogs } = makeFakes({})
+  const cancelled = []
+  let queue = [{ name: 'SDT-9', label: 'menunggu' }]
+  connector.getCurrentWork = async () => []
+  connector.getQueuedWork = async () => queue
+  connector.cancelWork = async (name) => {
+    cancelled.push(name)
+    queue = [] // the server row is gone — the refresh must reflect it immediately
+    return { ok: true }
+  }
+  const store = createSaraStore({ connector, chrome, dialogs })
+  store.setQueuedWork([{ name: 'SDT-9', label: 'menunggu' }])
+
+  const out = await store.cancelWork('SDT-9')
+  assert.equal(out.ok, true)
+  assert.deepEqual(cancelled, ['SDT-9'])
+  assert.deepEqual(store.getState().queuedWork, [], 'the row disappears without waiting for the next poll')
+})

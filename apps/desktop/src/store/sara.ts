@@ -16,7 +16,10 @@ export interface SaraWidgetState {
   watch: { screen: boolean; voice: boolean }
   /** Connector truth: a capture is actually running right now. The badge renders THIS. */
   recording: boolean
-  currentWork: { label: string }[]
+  /** In-flight task(s). `name` (the server task id) powers the Batal button. */
+  currentWork: { name?: string; label: string }[]
+  /** Server-side Queued tasks waiting for this laptop's single lane, dispatch order. */
+  queuedWork: { name: string; label: string; creation?: string }[]
   paired: boolean
   /** WHOSE account this app is paired to ("Connected as ..."); '' until known. */
   account: string
@@ -50,6 +53,7 @@ export const SARA_DEFAULT_STATE: SaraWidgetState = {
   watch: { screen: false, voice: false },
   recording: false,
   currentWork: [],
+  queuedWork: [],
   paired: false,
   account: '',
   authBad: false,
