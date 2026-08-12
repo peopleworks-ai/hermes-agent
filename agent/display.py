@@ -1391,9 +1391,13 @@ def get_cute_tool_message(
         # which. sara-desktop is 17,648 chars of SKILL.md inside a 112,650-char pack;
         # "did it actually open the reference?" is the whole question, and this label
         # was throwing the answer away.
+        # Name a FILE on every line, never a bare pack. Omitting file_path reads the
+        # pack's SKILL.md, but printing just "sara-desktop" left the reader to know
+        # that — so a manual read and a reference read still looked different only by
+        # absence, which is exactly the ambiguity this label is meant to remove.
         _name = args.get("name", "") or ""
-        _fp = args.get("file_path") or ""
-        _label = f"{_name}/{_fp}" if _fp else (_name or "(list)")
+        _fp = args.get("file_path") or "SKILL.md"
+        _label = f"{_name}/{_fp}" if _name else "(list)"
         return _wrap(f"┊ 📚 skill     {_trunc(_label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
