@@ -276,6 +276,13 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+def _env_denied_tools() -> frozenset:
+    """Per-tool deny-list from HERMES_DISABLED_TOOLS (comma-separated names)."""
+    return frozenset(
+        t.strip() for t in os.environ.get("HERMES_DISABLED_TOOLS", "").split(",") if t.strip()
+    )
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -323,6 +330,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            _env_denied_tools(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -336,6 +344,18 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                        skip_tool_search_assembly=skip_tool_search_assembly)
+    # HERMES_DISABLED_TOOLS (per-tool admin deny-list, set by the Sarä Desktop
+    # connector) is enforced HERE — the one chokepoint every tool-list build
+    # goes through. It used to live only in agent_init, and the MCP refresh
+    # (refresh_agent_mcp_tools → this function) rebuilt agent.tools WITHOUT
+    # it, silently resurrecting denied tools the moment an MCP server
+    # connected (live: 'browser' denied by policy, stagehand MCP attach
+    # brought browser_navigate back). The env var is part of the cache key,
+    # so filtered and unfiltered processes never share entries.
+    _denied = _env_denied_tools()
+    if _denied:
+        result = [t for t in result
+                  if t.get("function", {}).get("name") not in _denied]
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
