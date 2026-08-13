@@ -1336,6 +1336,16 @@ def get_cute_tool_message(
         except Exception:
             pass
         return _wrap(f"┊ 🗺️ dom       {detail}  {dur}")
+    if tool_name == "browser_dom_click":
+        return _wrap(f"┊ 🗺️ dom-click [{args.get('index', '?')}]  {dur}")
+    if tool_name == "browser_dom_type":
+        return _wrap(f"┊ 🗺️ dom-type  [{args.get('index', '?')}] \"{_trunc(args.get('text', ''), 25)}\"  {dur}")
+    if tool_name == "browser_dom_select_option":
+        return _wrap(f"┊ 🗺️ dom-pick  [{args.get('index', '?')}] \"{_trunc(args.get('option_text', ''), 25)}\"  {dur}")
+    if tool_name == "browser_dom_get_dropdown_options":
+        return _wrap(f"┊ 🗺️ dom-opts  [{args.get('index', '?')}]  {dur}")
+    if tool_name == "browser_dom_scroll_to_text":
+        return _wrap(f"┊ 🗺️ dom-find  \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
     if tool_name == "browser_click":
         return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
     if tool_name == "browser_type":

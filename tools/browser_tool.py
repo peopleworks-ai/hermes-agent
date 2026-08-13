@@ -1867,6 +1867,64 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_dom_click",
+        "description": "Click the element numbered [index] in the LAST browser_dom_snapshot map. Use when browser_click has no ref for the element (it exists in the DOM but not the accessibility tree). Re-run browser_dom_snapshot after the page changes — indexes are per-map.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "The [n] number from the dom snapshot map."}
+            },
+            "required": ["index"]
+        }
+    },
+    {
+        "name": "browser_dom_type",
+        "description": "Type into the element numbered [index] from the dom snapshot map (input/textarea/contenteditable). Fires proper input/change events so React/Vue forms register the value.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "The [n] number from the dom snapshot map."},
+                "text": {"type": "string", "description": "Text to type."},
+                "clear": {"type": "boolean", "description": "Replace existing content (default true); false appends.", "default": True}
+            },
+            "required": ["index", "text"]
+        }
+    },
+    {
+        "name": "browser_dom_get_dropdown_options",
+        "description": "List the options of the native <select> numbered [index] in the dom snapshot map. For custom (div-based) dropdowns, browser_dom_click it open and re-run browser_dom_snapshot instead.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "The [n] number from the dom snapshot map."}
+            },
+            "required": ["index"]
+        }
+    },
+    {
+        "name": "browser_dom_select_option",
+        "description": "Select an option of the native <select> numbered [index] by its VISIBLE TEXT (exact match first, then case-insensitive substring). Fires input/change events.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "The [n] number from the dom snapshot map."},
+                "option_text": {"type": "string", "description": "Visible text of the option to pick."}
+            },
+            "required": ["index", "option_text"]
+        }
+    },
+    {
+        "name": "browser_dom_scroll_to_text",
+        "description": "Scroll the first occurrence of the given visible text into view (center of screen). Useful to reach a section before mapping/acting on it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Exact text fragment to find on the page."}
+            },
+            "required": ["text"]
+        }
+    },
+    {
         "name": "browser_click",
         "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
@@ -3334,11 +3392,13 @@ def _dom_node_text(node_id, dom_map, depth=0):
 
 
 def _format_dom_map(payload, max_elements: int):
-    """(header+lines text, shown, total_interactive) from buildDomTree output.
+    """(text, shown, total, index_map) from buildDomTree output.
 
     Pure — unit-tested against a fixture map. One compact line per element,
     page order by highlightIndex, so the whole list survives truncation
-    budgets that a raw 50-200KB DOM dump never would.
+    budgets that a raw 50-200KB DOM dump never would. index_map covers ALL
+    interactive elements (not just the shown cap) so the dom action tools can
+    target a hidden-but-real index too.
     """
     dom_map = (payload or {}).get("map") or {}
     interactive = []
@@ -3380,11 +3440,16 @@ def _format_dom_map(payload, max_elements: int):
         lines.append(line)
 
     header = (f"DOM interactive elements — showing {len(lines)} of {total} "
-              f"(from {len(dom_map)} DOM nodes). Numbered in page order; use the "
-              f"text/xpath with browser_snapshot refs or browser_click to act.")
+              f"(from {len(dom_map)} DOM nodes). Numbered in page order; act on an "
+              f"index with browser_dom_click / browser_dom_type / browser_dom_select_option.")
     if total > len(lines):
         header += f" {total - len(lines)} more elements hidden — raise max_elements to see them."
-    return header + "\n" + "\n".join(lines), len(lines), total
+    index_map = {
+        int(n.get("highlightIndex")): {"xpath": n.get("xpath") or "",
+                                       "tag": n.get("tagName") or "?"}
+        for n in interactive
+    }
+    return header + "\n" + "\n".join(lines), len(lines), total, index_map
 
 
 def browser_dom_snapshot(max_elements: int = 60, viewport_expansion: int = 0,
@@ -3445,7 +3510,11 @@ def browser_dom_snapshot(max_elements: int = 60, viewport_expansion: int = 0,
             "error": "buildDomTree returned no element map — the page may still be loading; retry or use browser_snapshot.",
         }, ensure_ascii=False)
 
-    text, shown, total = _format_dom_map(payload, max(1, min(int(max_elements or 60), 300)))
+    text, shown, total, index_map = _format_dom_map(payload, max(1, min(int(max_elements or 60), 300)))
+    # The dom action tools (click/type/select) resolve an index against THIS
+    # map — the same freshness contract browser-use itself uses: act on the
+    # state you were shown, re-map after the page changes.
+    _dom_map_index_cache[_last_session_key(task_id or "default")] = index_map
     if len(text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
         text = _truncate_snapshot(text)
     return json.dumps({
@@ -3454,6 +3523,182 @@ def browser_dom_snapshot(max_elements: int = 60, viewport_expansion: int = 0,
         "shown": shown,
         "elements": _redact_browser_output(text),
     }, ensure_ascii=False)
+
+
+# ── browser-use action family: act BY MAP INDEX ──────────────────────────────
+# These complete the see→act loop for pages the a11y tree can't describe: the
+# map numbers an element, these tools act on that number via its xpath. All
+# parameters are JSON-encoded into fixed JS templates (no model-authored JS —
+# the injection surface is a string literal, not code), and everything rides
+# _browser_eval so the private-URL checks + redaction apply unchanged.
+
+_dom_map_index_cache: dict = {}
+
+
+def _dom_cached_element(task_id, index):
+    key = _last_session_key(task_id or "default")
+    try:
+        entry = (_dom_map_index_cache.get(key) or {}).get(int(index))
+    except (TypeError, ValueError):
+        entry = None
+    return entry
+
+
+_DOM_FIND_JS = (
+    "const el = document.evaluate(xp, document, null, "
+    "XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; "
+    "if (!el) return JSON.stringify({ok:false, error:'element not found at its xpath — "
+    "the page changed since the map; re-run browser_dom_snapshot'}); "
+    "el.scrollIntoView({block:'center', inline:'center'}); "
+)
+
+
+def _dom_action(task_id, body_js):
+    """Run one fixed-template DOM action through _browser_eval and unwrap."""
+    expression = "(() => { " + body_js + " })()"
+    raw = _browser_eval(expression, task_id)
+    try:
+        evaled = json.loads(raw)
+    except Exception:
+        return raw
+    if not evaled.get("success"):
+        return json.dumps(evaled, ensure_ascii=False)
+    payload = evaled.get("result")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            pass
+    if isinstance(payload, dict):
+        ok = payload.pop("ok", None)
+        out = {"success": bool(ok), **payload}
+        return json.dumps(_redact_browser_output(out), ensure_ascii=False, default=str)
+    return json.dumps({"success": True, "result": _redact_browser_output(payload)},
+                      ensure_ascii=False, default=str)
+
+
+def _dom_index_guard(index, task_id):
+    """Camofox + cache checks shared by every index-based dom action."""
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "DOM actions are not supported in Camofox mode — use browser_click/browser_type.",
+        }, ensure_ascii=False)
+    entry = _dom_cached_element(task_id, index)
+    if not entry or not entry.get("xpath"):
+        return json.dumps({
+            "success": False,
+            "error": (f"No mapped element [{index}] — run browser_dom_snapshot first "
+                      "(the map is per-page; re-run it after the page changes)."),
+        }, ensure_ascii=False)
+    return entry
+
+
+def browser_dom_click(index: int, task_id: Optional[str] = None) -> str:
+    """Click the element numbered [index] in the last browser_dom_snapshot map."""
+    entry = _dom_index_guard(index, task_id)
+    if isinstance(entry, str):
+        return entry
+    body = (
+        f"const xp = {json.dumps(entry['xpath'])}; " + _DOM_FIND_JS +
+        "el.click(); "
+        "return JSON.stringify({ok:true, clicked: el.tagName.toLowerCase(), "
+        "text: (el.innerText || el.value || '').slice(0, 80)});"
+    )
+    return _dom_action(task_id, body)
+
+
+def browser_dom_type(index: int, text: str, clear: bool = True,
+                     task_id: Optional[str] = None) -> str:
+    """Type into the element numbered [index] from the map (input/textarea/contenteditable).
+
+    Uses the native value setter + input/change events so React/Vue forms see
+    the change — a bare `.value =` is invisible to their state.
+    """
+    entry = _dom_index_guard(index, task_id)
+    if isinstance(entry, str):
+        return entry
+    body = (
+        f"const xp = {json.dumps(entry['xpath'])}; "
+        f"const txt = {json.dumps(str(text or ''))}; "
+        f"const clear = {json.dumps(bool(clear))}; " + _DOM_FIND_JS +
+        "el.focus(); "
+        "if (el.isContentEditable) { if (clear) el.textContent = ''; el.textContent += txt; } "
+        "else { const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype "
+        ": window.HTMLInputElement.prototype; "
+        "const desc = Object.getOwnPropertyDescriptor(proto, 'value'); "
+        "const next = clear ? txt : ((el.value || '') + txt); "
+        "if (desc && desc.set) desc.set.call(el, next); else el.value = next; } "
+        "el.dispatchEvent(new Event('input', {bubbles:true})); "
+        "el.dispatchEvent(new Event('change', {bubbles:true})); "
+        "return JSON.stringify({ok:true, typed_into: el.tagName.toLowerCase(), "
+        "value_now: String(el.value || el.textContent || '').slice(0, 80)});"
+    )
+    return _dom_action(task_id, body)
+
+
+def browser_dom_get_dropdown_options(index: int, task_id: Optional[str] = None) -> str:
+    """List the options of the <select> numbered [index] in the map."""
+    entry = _dom_index_guard(index, task_id)
+    if isinstance(entry, str):
+        return entry
+    body = (
+        f"const xp = {json.dumps(entry['xpath'])}; " + _DOM_FIND_JS +
+        "if (el.tagName !== 'SELECT') return JSON.stringify({ok:false, "
+        "error:'element is <' + el.tagName.toLowerCase() + '>, not a <select> — "
+        "for custom dropdowns click it open and re-map'}); "
+        "return JSON.stringify({ok:true, options: Array.from(el.options).slice(0, 100)"
+        ".map((o, i) => ({i, text: o.text.slice(0, 80), selected: o.selected}))});"
+    )
+    return _dom_action(task_id, body)
+
+
+def browser_dom_select_option(index: int, option_text: str,
+                              task_id: Optional[str] = None) -> str:
+    """Pick a <select> option by its visible text (exact, then substring match)."""
+    entry = _dom_index_guard(index, task_id)
+    if isinstance(entry, str):
+        return entry
+    body = (
+        f"const xp = {json.dumps(entry['xpath'])}; "
+        f"const want = {json.dumps(str(option_text or ''))}; " + _DOM_FIND_JS +
+        "if (el.tagName !== 'SELECT') return JSON.stringify({ok:false, "
+        "error:'not a <select>'}); "
+        "const opts = Array.from(el.options); "
+        "const opt = opts.find(o => o.text.trim() === want.trim()) "
+        "|| opts.find(o => o.text.trim().toLowerCase().includes(want.trim().toLowerCase())); "
+        "if (!opt) return JSON.stringify({ok:false, error:'option not found', "
+        "available: opts.slice(0, 20).map(o => o.text.slice(0, 40))}); "
+        "el.value = opt.value; "
+        "el.dispatchEvent(new Event('input', {bubbles:true})); "
+        "el.dispatchEvent(new Event('change', {bubbles:true})); "
+        "return JSON.stringify({ok:true, selected: opt.text.slice(0, 80)});"
+    )
+    return _dom_action(task_id, body)
+
+
+def browser_dom_scroll_to_text(text: str, task_id: Optional[str] = None) -> str:
+    """Scroll the first occurrence of visible text into view (browser-use's scroll_to_text)."""
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "DOM actions are not supported in Camofox mode — use browser_scroll.",
+        }, ensure_ascii=False)
+    if not (text or "").strip():
+        return json.dumps({"success": False, "error": "text is required"}, ensure_ascii=False)
+    body = (
+        f"const want = {json.dumps(str(text))}; "
+        "const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); "
+        "let n; while ((n = walker.nextNode())) { "
+        "if (n.textContent && n.textContent.includes(want)) { "
+        "const el = n.parentElement; if (!el) continue; "
+        "el.scrollIntoView({block:'center'}); "
+        "return JSON.stringify({ok:true, found_in: el.tagName.toLowerCase(), "
+        "text: n.textContent.trim().slice(0, 80)}); } } "
+        "return JSON.stringify({ok:false, error:'text not found on page (it may be inside "
+        "an iframe or rendered later — scroll manually or re-map)'});"
+    )
+    return _dom_action(task_id, body)
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
@@ -4933,6 +5178,53 @@ registry.register(
         max_elements=args.get("max_elements", 60),
         viewport_expansion=args.get("viewport_expansion", 0),
         task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🗺️",
+)
+registry.register(
+    name="browser_dom_click",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_dom_click"],
+    handler=lambda args, **kw: browser_dom_click(
+        index=args.get("index"), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🗺️",
+)
+registry.register(
+    name="browser_dom_type",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_dom_type"],
+    handler=lambda args, **kw: browser_dom_type(
+        index=args.get("index"), text=args.get("text", ""),
+        clear=args.get("clear", True), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🗺️",
+)
+registry.register(
+    name="browser_dom_get_dropdown_options",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_dom_get_dropdown_options"],
+    handler=lambda args, **kw: browser_dom_get_dropdown_options(
+        index=args.get("index"), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🗺️",
+)
+registry.register(
+    name="browser_dom_select_option",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_dom_select_option"],
+    handler=lambda args, **kw: browser_dom_select_option(
+        index=args.get("index"), option_text=args.get("option_text", ""),
+        task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🗺️",
+)
+registry.register(
+    name="browser_dom_scroll_to_text",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_dom_scroll_to_text"],
+    handler=lambda args, **kw: browser_dom_scroll_to_text(
+        text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🗺️",
 )
