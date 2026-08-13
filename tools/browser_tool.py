@@ -1859,7 +1859,7 @@ BROWSER_TOOL_SCHEMAS = [
                 },
                 "viewport_expansion": {
                     "type": "integer",
-                    "description": "Pixels beyond the viewport to include (default 0 = visible viewport only; e.g. 1000 to include just-below-the-fold elements).",
+                    "description": "Pixels beyond the viewport to include. 0 (default) = visible viewport only; 1000 = include just-below-the-fold; -1 = map the WHOLE page (use when an element you know exists is missing from the map — it may simply be off-screen).",
                     "default": 0
                 }
             },
@@ -3413,6 +3413,12 @@ def _format_dom_map(payload, max_elements: int):
     interactive.sort(key=lambda n: n.get("highlightIndex") or 0)
     total = len(interactive)
 
+    # Fit the LINE LIST to the snapshot budget up front, instead of letting a
+    # blind char-truncation cut the tail after we've already claimed
+    # "showing N" (live finding: 85 shown reported, last ~26 lines cut — the
+    # element the agent needed was in the severed tail and the count lied).
+    budget = SNAPSHOT_SUMMARIZE_THRESHOLD - 400  # header + hidden-note reserve
+    used = 0
     lines = []
     for node in interactive[:max_elements]:
         idx = node.get("highlightIndex")
@@ -3437,7 +3443,10 @@ def _format_dom_map(payload, max_elements: int):
         xpath = node.get("xpath") or ""
         if xpath:
             line += f"  ({xpath[-70:]})"
+        if used + len(line) + 1 > budget:
+            break  # count what actually fits — never claim lines the cut removed
         lines.append(line)
+        used += len(line) + 1
 
     header = (f"DOM interactive elements — showing {len(lines)} of {total} "
               f"(from {len(dom_map)} DOM nodes). Numbered in page order; act on an "
@@ -3474,7 +3483,12 @@ def browser_dom_snapshot(max_elements: int = 60, viewport_expansion: int = 0,
             "error": f"buildDomTree.js asset missing/unreadable: {e} — reinstall Sarä's engine.",
         }, ensure_ascii=False)
 
-    expansion = max(0, min(int(viewport_expansion or 0), 5000))
+    # -1 = map the WHOLE page (browser-use's own no-filter sentinel). Default
+    # stays viewport-only: live comparison on a marketing page showed the map
+    # sees ~10 in-viewport elements where the full a11y tree lists 102 — the
+    # agent must be able to widen deliberately, not pay whole-page cost always.
+    _ve = int(viewport_expansion or 0)
+    expansion = -1 if _ve < 0 else min(_ve, 5000)
     # NOTE deliberately NOT routed through _enforce_browser_eval_policy: that
     # substring scan is for MODEL-authored expressions; this is our vendored,
     # read-only script and the scan false-positives on 50KB of JS. The guards
@@ -3688,15 +3702,22 @@ def browser_dom_scroll_to_text(text: str, task_id: Optional[str] = None) -> str:
         return json.dumps({"success": False, "error": "text is required"}, ensure_ascii=False)
     body = (
         f"const want = {json.dumps(str(text))}; "
+        # Skip non-rendered text: <script>/<style> blobs match substrings all
+        # the time (live finding: 'Sign in' matched an Indeed config JSON, not
+        # the button), and display:none text scrolls nowhere useful.
+        "const SKIP = new Set(['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','TITLE']); "
         "const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); "
         "let n; while ((n = walker.nextNode())) { "
-        "if (n.textContent && n.textContent.includes(want)) { "
-        "const el = n.parentElement; if (!el) continue; "
+        "if (!n.textContent || !n.textContent.includes(want)) continue; "
+        "const el = n.parentElement; if (!el || SKIP.has(el.tagName)) continue; "
+        "const r = el.getBoundingClientRect(); "
+        "if ((r.width === 0 && r.height === 0) || el.offsetParent === null "
+        "&& getComputedStyle(el).position !== 'fixed') continue; "
         "el.scrollIntoView({block:'center'}); "
         "return JSON.stringify({ok:true, found_in: el.tagName.toLowerCase(), "
-        "text: n.textContent.trim().slice(0, 80)}); } } "
-        "return JSON.stringify({ok:false, error:'text not found on page (it may be inside "
-        "an iframe or rendered later — scroll manually or re-map)'});"
+        "text: n.textContent.trim().slice(0, 80)}); } "
+        "return JSON.stringify({ok:false, error:'visible text not found on page (it may be "
+        "inside an iframe or rendered later — scroll manually or re-map)'});"
     )
     return _dom_action(task_id, body)
 
