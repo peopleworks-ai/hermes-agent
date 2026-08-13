@@ -565,6 +565,7 @@ _TOOL_VERBS: dict[str, str] = {
     "video_generate": "Generating video",
     "text_to_speech": "Generating speech",
     "vision_analyze": "Looking at the image",
+    "browser_dom_snapshot": "Mapping DOM",
     "session_search": "Searching past sessions",
     "skill_view": "Reading skill",
     "skills_list": "Listing skills",
@@ -1322,6 +1323,19 @@ def get_cute_tool_message(
     if tool_name == "browser_snapshot":
         mode = "full" if args.get("full") else "compact"
         return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
+    if tool_name == "browser_dom_snapshot":
+        # Say what the map FOUND, not just that it ran — the element count is
+        # the signal the user (and the model) act on.
+        detail = "interactive map"
+        try:
+            import json as _json
+
+            parsed = _json.loads(result) if isinstance(result, str) else (result or {})
+            if isinstance(parsed, dict) and parsed.get("total_interactive") is not None:
+                detail = f"{parsed.get('shown')}/{parsed.get('total_interactive')} elements"
+        except Exception:
+            pass
+        return _wrap(f"┊ 🗺️ dom       {detail}  {dur}")
     if tool_name == "browser_click":
         return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
     if tool_name == "browser_type":

@@ -1847,6 +1847,26 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_dom_snapshot",
+        "description": "Map the page's INTERACTIVE elements from real DOM geometry (browser-use's buildDomTree). Returns a numbered list: [i] <tag> \"text\" key-attributes (xpath). Use when browser_snapshot comes back thin/empty on a JS-heavy page — this sees buttons/links/inputs that have no accessibility labels — BEFORE falling back to browser_vision. Read-only: act on what it finds via browser_snapshot refs or browser_click.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "max_elements": {
+                    "type": "integer",
+                    "description": "Cap on elements returned (default 60, max 300). The header always states the true total.",
+                    "default": 60
+                },
+                "viewport_expansion": {
+                    "type": "integer",
+                    "description": "Pixels beyond the viewport to include (default 0 = visible viewport only; e.g. 1000 to include just-below-the-fold elements).",
+                    "default": 0
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "browser_click",
         "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
@@ -3264,6 +3284,175 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
             f"({blocked_url}). Refusing to {action} on this page in this "
             "browser mode."
         ),
+    }, ensure_ascii=False)
+
+
+# ── browser_dom_snapshot — the browser-use "second pair of eyes" ─────────────
+# The accessibility-tree snapshot goes thin on JS-heavy pages with poor a11y
+# markup (observed live: employers.indeed.com marketing pages returned a
+# near-empty tree and the agent fell back to expensive vision). This tool
+# injects browser-use's classic buildDomTree.js (vendored, MIT — see
+# tools/assets/buildDomTree.js header) and returns a numbered list of the
+# INTERACTIVE, VISIBLE elements it finds from real DOM geometry — no reliance
+# on accessibility labels. READ-ONLY by design: it maps the page; clicking
+# stays with browser_click.
+
+_DOM_TREE_SCRIPT_PATH = Path(__file__).parent / "assets" / "buildDomTree.js"
+_dom_tree_script_cache: Optional[str] = None
+
+# Attributes worth showing per element. `value` is deliberately ABSENT —
+# input values are the prime secret-leak vector in a DOM dump.
+_DOM_SNAPSHOT_ATTRS = ("href", "placeholder", "aria-label", "title", "name",
+                       "type", "alt", "role", "id")
+
+
+def _dom_tree_script() -> str:
+    global _dom_tree_script_cache
+    if _dom_tree_script_cache is None:
+        src = _DOM_TREE_SCRIPT_PATH.read_text(encoding="utf-8").strip()
+        if src.endswith(";"):
+            src = src[:-1]  # the vendored file ends `};` — must stay an expression
+        _dom_tree_script_cache = src
+    return _dom_tree_script_cache
+
+
+def _dom_node_text(node_id, dom_map, depth=0):
+    """Visible text under a node, walking child ids (bounded)."""
+    if depth > 4:
+        return ""
+    node = dom_map.get(str(node_id)) or dom_map.get(node_id) or {}
+    if node.get("type") == "TEXT_NODE":
+        return (node.get("text") or "").strip() if node.get("isVisible") else ""
+    parts = []
+    for child in (node.get("children") or [])[:20]:
+        t = _dom_node_text(child, dom_map, depth + 1)
+        if t:
+            parts.append(t)
+        if sum(len(p) for p in parts) > 120:
+            break
+    return " ".join(parts).strip()
+
+
+def _format_dom_map(payload, max_elements: int):
+    """(header+lines text, shown, total_interactive) from buildDomTree output.
+
+    Pure — unit-tested against a fixture map. One compact line per element,
+    page order by highlightIndex, so the whole list survives truncation
+    budgets that a raw 50-200KB DOM dump never would.
+    """
+    dom_map = (payload or {}).get("map") or {}
+    interactive = []
+    for node in dom_map.values():
+        if not isinstance(node, dict):
+            continue
+        if node.get("highlightIndex") is None:
+            continue
+        if not (node.get("isInteractive") and node.get("isVisible")):
+            continue
+        interactive.append(node)
+    interactive.sort(key=lambda n: n.get("highlightIndex") or 0)
+    total = len(interactive)
+
+    lines = []
+    for node in interactive[:max_elements]:
+        idx = node.get("highlightIndex")
+        tag = node.get("tagName") or "?"
+        attrs = node.get("attributes") or {}
+        text = ""
+        for child in (node.get("children") or [])[:20]:
+            t = _dom_node_text(child, dom_map, 1)
+            if t:
+                text = t
+                break
+        attr_bits = []
+        for a in _DOM_SNAPSHOT_ATTRS:
+            v = attrs.get(a)
+            if v:
+                attr_bits.append(f'{a}="{str(v)[:60]}"')
+        line = f"[{idx}] <{tag}>"
+        if text:
+            line += f' "{text[:80]}"'
+        if attr_bits:
+            line += " " + " ".join(attr_bits[:4])
+        xpath = node.get("xpath") or ""
+        if xpath:
+            line += f"  ({xpath[-70:]})"
+        lines.append(line)
+
+    header = (f"DOM interactive elements — showing {len(lines)} of {total} "
+              f"(from {len(dom_map)} DOM nodes). Numbered in page order; use the "
+              f"text/xpath with browser_snapshot refs or browser_click to act.")
+    if total > len(lines):
+        header += f" {total - len(lines)} more elements hidden — raise max_elements to see them."
+    return header + "\n" + "\n".join(lines), len(lines), total
+
+
+def browser_dom_snapshot(max_elements: int = 60, viewport_expansion: int = 0,
+                         task_id: Optional[str] = None) -> str:
+    """Map the page's interactive elements via real DOM geometry (browser-use).
+
+    Complements browser_snapshot: use when the accessibility snapshot comes
+    back thin/empty on a JS-heavy page, BEFORE falling back to vision.
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": ("DOM snapshot is not supported in Camofox mode — use "
+                      "browser_snapshot or browser_vision to inspect page state."),
+        }, ensure_ascii=False)
+
+    try:
+        script = _dom_tree_script()
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"buildDomTree.js asset missing/unreadable: {e} — reinstall Sarä's engine.",
+        }, ensure_ascii=False)
+
+    expansion = max(0, min(int(viewport_expansion or 0), 5000))
+    # NOTE deliberately NOT routed through _enforce_browser_eval_policy: that
+    # substring scan is for MODEL-authored expressions; this is our vendored,
+    # read-only script and the scan false-positives on 50KB of JS. The guards
+    # that matter (private-URL pre/post checks, output redaction, camofox
+    # branch) all live in _browser_eval, which we reuse wholesale — and the
+    # supervisor WebSocket path inside it is what carries a 50KB payload
+    # safely past Windows' 32k argv limit.
+    expression = (
+        "(() => { const __fn = (" + script + "); "
+        "return JSON.stringify(__fn({doHighlightElements:false, "
+        f"focusHighlightIndex:-1, viewportExpansion:{expansion}, debugMode:false}})); }})()"
+    )
+    raw = _browser_eval(expression, task_id)
+    try:
+        evaled = json.loads(raw)
+    except Exception:
+        return raw
+    if not evaled.get("success"):
+        err = evaled.get("error") or "eval failed"
+        evaled["error"] = (f"{err} — DOM snapshot unavailable on this backend; "
+                          "use browser_snapshot (try full=true) or browser_vision.")
+        return json.dumps(evaled, ensure_ascii=False)
+
+    payload = evaled.get("result")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = None
+    if not isinstance(payload, dict) or not payload.get("map"):
+        return json.dumps({
+            "success": False,
+            "error": "buildDomTree returned no element map — the page may still be loading; retry or use browser_snapshot.",
+        }, ensure_ascii=False)
+
+    text, shown, total = _format_dom_map(payload, max(1, min(int(max_elements or 60), 300)))
+    if len(text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        text = _truncate_snapshot(text)
+    return json.dumps({
+        "success": True,
+        "total_interactive": total,
+        "shown": shown,
+        "elements": _redact_browser_output(text),
     }, ensure_ascii=False)
 
 
@@ -4735,6 +4924,17 @@ registry.register(
         full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
     emoji="📸",
+)
+registry.register(
+    name="browser_dom_snapshot",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_dom_snapshot"],
+    handler=lambda args, **kw: browser_dom_snapshot(
+        max_elements=args.get("max_elements", 60),
+        viewport_expansion=args.get("viewport_expansion", 0),
+        task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🗺️",
 )
 registry.register(
     name="browser_click",
