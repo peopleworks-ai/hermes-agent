@@ -1067,7 +1067,25 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
-    
+
+    # Per-tool deny-list via environment (finer than toolsets). Set by the
+    # Sarä Desktop connector from the server's admin policy — a governance
+    # ceiling ("no browser_console anywhere") that must not require a new CLI
+    # flag on every embedding surface. Filtering HERE, before valid_tool_names
+    # is computed, makes a denied tool invisible to the model (not listed,
+    # not callable) rather than merely erroring at call time.
+    _env_denied = {
+        t.strip() for t in os.environ.get("HERMES_DISABLED_TOOLS", "").split(",") if t.strip()
+    }
+    if _env_denied and agent.tools:
+        _before = len(agent.tools)
+        agent.tools = [
+            t for t in agent.tools
+            if t.get("function", {}).get("name") not in _env_denied
+        ]
+        if not agent.quiet_mode and len(agent.tools) != _before:
+            print(f"   🚫 Denied by policy (HERMES_DISABLED_TOOLS): {_before - len(agent.tools)} tool(s)")
+
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
     if agent.tools:

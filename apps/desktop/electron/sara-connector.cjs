@@ -531,8 +531,38 @@ function extractAnswer(raw) {
 // a crash. `isToolsetGatingAvailable()` reports the probe result so the UI can tell the truth about
 // whether the boundary is real.
 const CHROME_TOOLSETS = 'browser,web,vision,skills,todo' // deliberately NO terminal, NO file
+// What "Whole Computer" means for a Sarä TASK when an admin policy forces us to
+// enumerate (you cannot subtract from "everything" without naming it first).
+// Without a policy, whole mode keeps today's behaviour: no --toolsets at all.
+const WHOLE_TOOLSETS = 'browser,web,vision,skills,todo,terminal,file,computer_use'
 let toolsetMode = 'chrome' // §5 default; the store pushes the real one via setToolsetMode
 let toolsetGating = false // flipped true only if the probe succeeds
+// Admin ceiling from Super Admin → Desktop Tools, refreshed on every claim poll:
+// {disabled_toolsets: [], disabled_tools: []}. The user's workspace mode can only
+// NARROW further — it never re-enables what the policy disabled.
+let toolPolicy = { disabled_toolsets: [], disabled_tools: [] }
+function setToolPolicy(p) {
+  toolPolicy = {
+    disabled_toolsets: Array.isArray(p && p.disabled_toolsets) ? p.disabled_toolsets : [],
+    disabled_tools: Array.isArray(p && p.disabled_tools) ? p.disabled_tools : [],
+  }
+}
+function getToolPolicy() {
+  return { ...toolPolicy, disabled_toolsets: [...toolPolicy.disabled_toolsets], disabled_tools: [...toolPolicy.disabled_tools] }
+}
+// Pure — exported for tests. The effective --toolsets list for a spawn, or null
+// for "pass no flag" (ungated / nothing to subtract in whole mode).
+function effectiveToolsets(mode, gating, policy) {
+  if (!gating) return null // unknown flag on this hermes — degrade to ungated, never crash
+  const denied = new Set((policy && policy.disabled_toolsets) || [])
+  if (mode === 'chrome') {
+    const kept = CHROME_TOOLSETS.split(',').filter((t) => !denied.has(t))
+    return kept.join(',') || 'skills' // never an empty list — a tool-less spawn can do nothing, not even report why
+  }
+  if (denied.size === 0) return null // whole mode, no policy → today's behaviour
+  const kept = WHOLE_TOOLSETS.split(',').filter((t) => !denied.has(t))
+  return kept.join(',') || 'skills'
+}
 
 function setToolsetMode(mode) {
   toolsetMode = mode === 'whole' ? 'whole' : mode === 'pause' ? 'pause' : 'chrome'
@@ -594,9 +624,10 @@ function probeToolsets() {
 // Pure (exported for tests): the args for a task spawn given a gating flag + workspace mode. Whole
 // Computer (or an un-probed Hermes) → no flag → Hermes's full default toolset. Chrome → the
 // browser-only set, but ONLY when the probe confirmed --toolsets is understood.
-function buildChatArgs(prompt, gating, mode) {
-  if (gating && mode === 'chrome') {
-    return ['chat', '--toolsets', CHROME_TOOLSETS, '-q', prompt]
+function buildChatArgs(prompt, gating, mode, policy) {
+  const ts = effectiveToolsets(mode, gating, policy || toolPolicy)
+  if (ts) {
+    return ['chat', '--toolsets', ts, '-q', prompt]
   }
   return ['chat', '-q', prompt]
 }
@@ -653,7 +684,14 @@ function runHermes(prompt, onProgress, cwd, taskName) {
       // cwd = the conversation's bundle folder when there is one. Hermes reads
       // AGENTS.md from its working directory; the connector never set a cwd, so
       // that injection has never once fired.
-      child = spawn(bin, hermesChatArgs(prompt), { windowsHide: true, ...(cwd ? { cwd } : {}) })
+      // Per-tool deny-list rides the environment (see agent_init's
+      // HERMES_DISABLED_TOOLS filter) — toolset-level denies ride --toolsets.
+      const _deniedTools = (toolPolicy.disabled_tools || []).join(',')
+      child = spawn(bin, hermesChatArgs(prompt), {
+        windowsHide: true,
+        ...(cwd ? { cwd } : {}),
+        env: { ...process.env, ...(_deniedTools ? { HERMES_DISABLED_TOOLS: _deniedTools } : {}) },
+      })
     } catch (e) {
       noteEngineBroken('missing')
       return resolve({ error: `hermes spawn failed: ${(e && e.message) || e}` })
@@ -774,6 +812,9 @@ async function pollOnce() {
     // This poll doubles as the server-side heartbeat, so it's also where we report our version.
     const task = await hcos(`${TASK_API}.claim_next_task`, { device: DEVICE, version: appVersion() })
     state.authBad = false // an authed round-trip is live proof the token still works
+    // Admin tool ceiling rides every claim poll — applied to the very spawn
+    // that runs this task, so a Super Admin check/uncheck is live in seconds.
+    if (task && task.tool_policy) setToolPolicy(task.tool_policy)
     if (task && task.name) {
       const entry = { name: task.name, label: task.prompt || '(task)' }
       state.running.push(entry)
@@ -1053,6 +1094,9 @@ module.exports = {
   setToolsetMode, // the store pushes 'chrome'|'whole'|'pause' on a workspace change
   isToolsetGatingAvailable, // did the boot probe confirm --toolsets works? (drives honest copy)
   buildChatArgs, // pure — exported for tests
+  effectiveToolsets, // pure — exported for tests (admin policy × workspace mode)
+  setToolPolicy, // admin ceiling from claim_next_task's tool_policy
+  getToolPolicy,
   looksLikeAppBanner, // pure — guards against reporting the app's own boot banner as a task result
   looksLikeNoProvider, // pure — guards against the "no inference provider" zero-work success
   CHROME_TOOLSETS,

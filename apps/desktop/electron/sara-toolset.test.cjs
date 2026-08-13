@@ -32,3 +32,40 @@ test('the Chrome toolset genuinely withholds the dangerous capabilities', () => 
   assert.ok(!sets.includes('terminal'), 'Chrome mode must NOT get a shell')
   assert.ok(!sets.includes('file'), 'Chrome mode must NOT get the filesystem')
 })
+
+// ── Admin tool ceiling (Super Admin → Desktop Tools) ─────────────────────────
+const { effectiveToolsets, setToolPolicy, getToolPolicy } = require('./sara-connector.cjs')
+
+test('effectiveToolsets: no gating → null (never pass an unknown flag)', () => {
+  assert.equal(effectiveToolsets('chrome', false, { disabled_toolsets: ['terminal'] }), null)
+})
+
+test('effectiveToolsets: chrome mode subtracts denied toolsets', () => {
+  const out = effectiveToolsets('chrome', true, { disabled_toolsets: ['vision', 'todo'] })
+  assert.equal(out, 'browser,web,skills')
+})
+
+test('effectiveToolsets: whole mode without policy keeps today\'s ungated behaviour', () => {
+  assert.equal(effectiveToolsets('whole', true, { disabled_toolsets: [] }), null)
+})
+
+test('effectiveToolsets: whole mode WITH policy enumerates and subtracts', () => {
+  const out = effectiveToolsets('whole', true, { disabled_toolsets: ['terminal', 'computer_use'] })
+  assert.equal(out, 'browser,web,vision,skills,todo,file')
+})
+
+test('effectiveToolsets: never returns an empty list', () => {
+  const all = 'browser,web,vision,skills,todo,terminal,file,computer_use'.split(',')
+  const out = effectiveToolsets('chrome', true, { disabled_toolsets: all })
+  assert.equal(out, 'skills', 'a tool-less spawn cannot even report why it failed')
+})
+
+test('setToolPolicy: junk shapes normalise to empty lists', () => {
+  setToolPolicy(null)
+  assert.deepEqual(getToolPolicy().disabled_toolsets, [])
+  setToolPolicy({ disabled_toolsets: 'terminal' }) // string, not array
+  assert.deepEqual(getToolPolicy().disabled_toolsets, [])
+  setToolPolicy({ disabled_toolsets: ['terminal'], disabled_tools: ['browser_console'] })
+  assert.deepEqual(getToolPolicy().disabled_tools, ['browser_console'])
+  setToolPolicy(null) // leave clean for other tests
+})
