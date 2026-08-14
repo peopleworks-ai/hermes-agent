@@ -473,9 +473,51 @@ function startPairing(onPaired) {
 }
 
 // ── Hermes: point it at the sidecar (auto-config) ────────────────────────
+// `hermes config set` is read-modify-write on ~/.hermes/config.yaml guarded only by an
+// IN-PROCESS lock, so concurrent setter processes all read the same snapshot and the last
+// writer wins — the other keys are silently dropped. On a fresh venv that left
+// model.provider=minimax but LOST model.base_url + model.api_key, and hermes then called
+// api.minimax.io directly with the placeholder key: every task 401'd while the widget
+// looked healthy (2026-08-14). One queue, one setter at a time — and overlapping
+// invocations (boot + post-bootstrap + repair) join the same queue instead of racing.
+let hermesConfigQueue = Promise.resolve()
+function queueHermesConfigWrites(settings, runOne) {
+  hermesConfigQueue = hermesConfigQueue.then(async () => {
+    for (const [k, v] of settings) {
+      try {
+        await runOne(k, v)
+      } catch {
+        /* best-effort — a failed key must not block the rest */
+      }
+    }
+  })
+  return hermesConfigQueue
+}
+
+function runHermesConfigSet(bin, key, value) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve()
+    }
+    // A wedged CLI must not jam the queue forever (config set is normally <2s).
+    const timer = setTimeout(finish, 15_000)
+    try {
+      const child = spawn(bin, ['config', 'set', key, value], { stdio: 'ignore' })
+      child.on('error', finish)
+      child.on('close', finish)
+    } catch {
+      finish()
+    }
+  })
+}
+
 function ensureHermesConfig() {
   const bin = hermesBin()
-  if (!bin) return // no CLI yet (pre-bootstrap / mid-repair) — main.cjs re-invokes after repair
+  if (!bin) return Promise.resolve() // no CLI yet (pre-bootstrap / mid-repair) — main.cjs re-invokes after repair
   const settings = [
     ['model.default', 'MiniMax-M3'],
     ['model.provider', 'minimax'],
@@ -485,13 +527,7 @@ function ensureHermesConfig() {
     // visible, persistent Chrome Sara the widget launches (brief §5).
     ['browser.cdp_url', `http://127.0.0.1:${process.env.SARA_CDP_PORT || 39222}`],
   ]
-  for (const [k, v] of settings) {
-    try {
-      spawn(bin, ['config', 'set', k, v], { stdio: 'ignore' })
-    } catch {
-      /* best-effort */
-    }
-  }
+  return queueHermesConfigWrites(settings, (k, v) => runHermesConfigSet(bin, k, v))
 }
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g
@@ -1090,6 +1126,7 @@ module.exports = {
   setRepairing, // pause task-claiming while the installer runs
   probeToolsets, // re-probe after a repair (also re-latches gating)
   ensureHermesConfig, // re-point the freshly installed CLI at the sidecar
+  queueHermesConfigWrites, // exported for tests — the one-at-a-time write queue contract
   // Workspace → toolset gating (Whole Computer made real):
   setToolsetMode, // the store pushes 'chrome'|'whole'|'pause' on a workspace change
   isToolsetGatingAvailable, // did the boot probe confirm --toolsets works? (drives honest copy)

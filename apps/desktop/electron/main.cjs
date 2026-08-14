@@ -1165,8 +1165,12 @@ function broadcastBootstrapEvent(ev) {
     // the fresh CLI at the sidecar and re-probe; both are idempotent.
     try {
       const saraConn = require('./sara-connector.cjs')
-      saraConn.ensureHermesConfig()
-      saraConn.probeToolsets().catch(() => {})
+      // Serial queue (queueHermesConfigWrites): probe only after ALL keys landed, so the
+      // first post-bootstrap task can't run a CLI whose base_url/api_key writes are pending.
+      saraConn
+        .ensureHermesConfig()
+        .then(() => saraConn.probeToolsets())
+        .catch(() => {})
     } catch {
       void 0
     }
@@ -6322,8 +6326,11 @@ async function runSaraEngineRepair(trigger) {
     }
     // Success = the per-spawn resolver can now see a working CLI. Re-point it at the
     // sidecar and re-probe gating; the probe itself clears (or re-latches) engineBroken.
+    // The config writes MUST finish before the probe/first task — they run one-at-a-time
+    // (see queueHermesConfigWrites), so an unawaited call here would leave the fresh CLI
+    // aimed at api.minimax.io for the first post-repair task.
     try {
-      saraConn.ensureHermesConfig()
+      await saraConn.ensureHermesConfig()
       await saraConn.probeToolsets()
     } catch {
       void 0
